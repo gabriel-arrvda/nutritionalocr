@@ -222,3 +222,15 @@ def test_translate_nutrients_api_failure():
         assert result['success'] is False
         assert result['translated'] == nutrients
         assert 'API Error' in result['error']
+
+
+def test_translate_nutrients_translator_initialization_failure():
+    """Should handle translator constructor failures gracefully"""
+    nutrients = {'calories': 100, 'protein': 10}
+
+    with patch('src.utils.data_collection.Translator', side_effect=Exception('Init Error')):
+        result = translate_nutrients(nutrients, source_lang='en', target_lang='pt')
+
+        assert result['success'] is False
+        assert result['translated'] == nutrients
+        assert 'Init Error' in result['error']

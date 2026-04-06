@@ -203,10 +203,9 @@ def translate_nutrients(
     Returns:
         Dict with 'success' (bool), 'translated' (dict), and 'error' keys
     """
-    translator = Translator()
-    translated_nutrients: Dict[str, Any] = {}
-
     try:
+        translator = Translator()
+        translated_nutrients: Dict[str, Any] = {}
         for nutrient_name, value in nutrients.items():
             translation = translator.translate(
                 nutrient_name,
