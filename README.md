@@ -67,7 +67,65 @@ leitor-ocr/
 2. [Nutritional Facts from Food Label](https://www.kaggle.com/datasets/shensivam/nutritional-facts-from-food-label)
 3. [Iranian Nutritional Fact Label](https://www.kaggle.com/datasets/gheysar4real/iranian-nutritional-fact-label)
 
-## Próximas Fases
+## Expected Output
 
-- **Fase 2:** API de OCR (Node.js/Python)
-- **Fase 3:** Frontend Angular
+After successful execution, you should have:
+
+```
+data/
+├── raw/
+│   └── (3 CSV files from Kaggle)
+├── processed/
+│   ├── consolidated_dataset.csv
+│   ├── download_tracking.csv
+│   ├── augmentation_log.csv
+│   └── report_YYYYMMDD_HHMMSS.txt
+└── images/
+    ├── original/
+    │   └── (500-3000 images)
+    ├── augmented/
+    │   └── (2000-12000 images)
+    └── rejected/
+        └── (any invalid images)
+```
+
+### Dataset Statistics
+
+- **Original images:** ~500-3000 (depends on Kaggle datasets)
+- **Augmented images:** ~2000-12000 (3-5x original)
+- **Total dataset size:** ~5-15 GB
+- **Execution time:** ~1-2 hours
+
+## Troubleshooting
+
+### Kaggle API Issues
+
+```bash
+# Verify API credentials
+cat ~/.kaggle/kaggle.json
+
+# Test authentication
+kaggle datasets list
+```
+
+### Translation Errors
+
+If `googletrans` fails with rate limiting:
+- Reduce translation batch size
+- Add delays between requests
+- Consider using `deep-translator` as fallback
+
+### Memory Issues
+
+If running out of memory during augmentation:
+- Process images in smaller batches
+- Reduce `augmentation_count` in CONFIG
+- Close other applications
+
+## Next Steps
+
+After collecting data:
+1. Review `data/processed/consolidated_dataset.csv`
+2. Examine sample images in `data/images/`
+3. Proceed to **Phase 2: OCR Model Training**
+4. Build API backend (Phase 3)
