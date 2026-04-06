@@ -1,0 +1,29 @@
+# Data folders
+data/
+logs/
+*.log
+
+# Kaggle credentials
+.kaggle/
+kaggle.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
