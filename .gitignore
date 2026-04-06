@@ -1,6 +1,26 @@
-# Data folders
-data/
-logs/
+# Data folders - ignore contents but track structure
+data/*
+!data/.gitkeep
+!data/raw/
+data/raw/*
+!data/raw/.gitkeep
+!data/processed/
+data/processed/*
+!data/processed/.gitkeep
+!data/images/
+data/images/*
+!data/images/original/
+data/images/original/*
+!data/images/original/.gitkeep
+!data/images/augmented/
+data/images/augmented/*
+!data/images/augmented/.gitkeep
+!data/images/rejected/
+data/images/rejected/*
+!data/images/rejected/.gitkeep
+
+logs/*
+!logs/.gitkeep
 *.log
 
 # Kaggle credentials
