@@ -4,7 +4,12 @@ import io
 import numpy as np
 import hashlib
 from unittest.mock import Mock, patch
-from src.utils.data_collection import validate_image, download_image, apply_augmentation
+from src.utils.data_collection import (
+    validate_image,
+    download_image,
+    apply_augmentation,
+    translate_nutrients,
+)
 
 
 def test_validate_image_valid_jpeg():
@@ -170,3 +175,50 @@ def test_apply_augmentation_fallback_metadata_and_non_rgb_fillcolor():
 
     assert len(results) == 1
     assert 'fallback_rotation' in results[0]['augmentation_type']
+
+
+def test_translate_nutrients_english_to_portuguese():
+    """Should translate English nutrient names to Portuguese"""
+    nutrients = {
+        'calories': 150,
+        'protein': 10.5,
+        'carbohydrates': 20.0,
+        'total_fat': 5.0
+    }
+
+    with patch('googletrans.Translator.translate') as mock_translate:
+        mock_translate.side_effect = lambda text, src, dest: Mock(text=f'{text}_pt')
+
+        result = translate_nutrients(nutrients, source_lang='en', target_lang='pt')
+
+        assert result['success'] is True
+        assert 'calories_pt' in result['translated']
+
+
+def test_translate_nutrients_preserves_values():
+    """Should preserve numeric values unchanged"""
+    nutrients = {
+        'protein': 12.5,
+        'sodium': 300
+    }
+
+    with patch('googletrans.Translator.translate') as mock_translate:
+        mock_translate.side_effect = lambda text, src, dest: Mock(text=f'{text}_pt')
+
+        result = translate_nutrients(nutrients, source_lang='en', target_lang='pt')
+
+        translated = result['translated']
+        assert translated['protein_pt'] == 12.5
+        assert translated['sodium_pt'] == 300
+
+
+def test_translate_nutrients_api_failure():
+    """Should handle translation API failures gracefully"""
+    nutrients = {'calories': 100}
+
+    with patch('googletrans.Translator.translate', side_effect=Exception('API Error')):
+        result = translate_nutrients(nutrients, source_lang='en', target_lang='pt')
+
+        assert result['success'] is False
+        assert result['translated'] == nutrients
+        assert 'API Error' in result['error']

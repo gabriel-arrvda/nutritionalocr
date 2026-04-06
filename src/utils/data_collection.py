@@ -5,6 +5,7 @@ from PIL import Image, ImageEnhance, ImageFilter, ImageChops
 import logging
 import requests
 import random
+from googletrans import Translator
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -184,3 +185,46 @@ def apply_augmentation(
         })
 
     return results
+
+
+def translate_nutrients(
+    nutrients: Dict[str, Any],
+    source_lang: str = 'en',
+    target_lang: str = 'pt'
+) -> Dict[str, Any]:
+    """
+    Translate nutrient names while preserving numeric values.
+
+    Args:
+        nutrients: Dict with nutrient names as keys and values as numbers
+        source_lang: Source language code
+        target_lang: Target language code
+
+    Returns:
+        Dict with 'success' (bool), 'translated' (dict), and 'error' keys
+    """
+    translator = Translator()
+    translated_nutrients: Dict[str, Any] = {}
+
+    try:
+        for nutrient_name, value in nutrients.items():
+            translation = translator.translate(
+                nutrient_name,
+                src=source_lang,
+                dest=target_lang,
+            )
+            translated_nutrients[translation.text] = value
+
+        return {
+            'success': True,
+            'translated': translated_nutrients,
+            'error': None,
+        }
+
+    except Exception as error:
+        logger.error(f"Translation failed: {error}")
+        return {
+            'success': False,
+            'translated': nutrients,
+            'error': str(error),
+        }
