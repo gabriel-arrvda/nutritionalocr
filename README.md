@@ -101,11 +101,20 @@ data/
 ### Kaggle API Issues
 
 ```bash
-# Verify API credentials
-cat ~/.kaggle/kaggle.json
+# Verify credentials file exists (without exposing content)
+ls -l ~/.kaggle/kaggle.json
+
+# Check file permission is restricted (expected: 600)
+stat -f "%Sp %N" ~/.kaggle/kaggle.json
 
 # Test authentication
 kaggle datasets list
+```
+
+If `~/.kaggle/kaggle.json` is missing, recreate it and run:
+
+```bash
+chmod 600 ~/.kaggle/kaggle.json
 ```
 
 ### Translation Errors
@@ -129,3 +138,14 @@ After collecting data:
 2. Examine sample images in `data/images/`
 3. Proceed to **Phase 2: OCR Model Training**
 4. Build API backend (Phase 3)
+
+## Validação Final (Task 13)
+
+- **Comando do plano (teste + coverage):**
+
+```bash
+pytest tests/test_data_collection.py -v --cov=src.utils.data_collection
+```
+
+- **Threshold esperado:** cobertura **>80%**
+- **Snapshot atual:** **16 passed**; cobertura total **96%**
