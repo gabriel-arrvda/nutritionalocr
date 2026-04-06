@@ -145,6 +145,8 @@ After collecting data:
 
 ```bash
 pytest tests/test_data_collection.py -v --cov=src.utils.data_collection
+# Fallback:
+python3 -m pytest tests/test_data_collection.py -v --cov=src.utils.data_collection
 ```
 
 - **Threshold esperado:** cobertura **>80%**
