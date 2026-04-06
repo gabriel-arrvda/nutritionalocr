@@ -186,8 +186,9 @@ def test_translate_nutrients_english_to_portuguese():
         'total_fat': 5.0
     }
 
-    with patch('googletrans.Translator.translate') as mock_translate:
-        mock_translate.side_effect = lambda text, src, dest: Mock(text=f'{text}_pt')
+    translator_mock = Mock()
+    translator_mock.translate.side_effect = lambda text, src, dest: Mock(text=f'{text}_pt')
+    with patch('src.utils.data_collection._build_translator', return_value=translator_mock):
 
         result = translate_nutrients(nutrients, source_lang='en', target_lang='pt')
 
@@ -202,8 +203,9 @@ def test_translate_nutrients_preserves_values():
         'sodium': 300
     }
 
-    with patch('googletrans.Translator.translate') as mock_translate:
-        mock_translate.side_effect = lambda text, src, dest: Mock(text=f'{text}_pt')
+    translator_mock = Mock()
+    translator_mock.translate.side_effect = lambda text, src, dest: Mock(text=f'{text}_pt')
+    with patch('src.utils.data_collection._build_translator', return_value=translator_mock):
 
         result = translate_nutrients(nutrients, source_lang='en', target_lang='pt')
 
@@ -216,7 +218,9 @@ def test_translate_nutrients_api_failure():
     """Should handle translation API failures gracefully"""
     nutrients = {'calories': 100}
 
-    with patch('googletrans.Translator.translate', side_effect=Exception('API Error')):
+    translator_mock = Mock()
+    translator_mock.translate.side_effect = Exception('API Error')
+    with patch('src.utils.data_collection._build_translator', return_value=translator_mock):
         result = translate_nutrients(nutrients, source_lang='en', target_lang='pt')
 
         assert result['success'] is False
@@ -228,9 +232,24 @@ def test_translate_nutrients_translator_initialization_failure():
     """Should handle translator constructor failures gracefully"""
     nutrients = {'calories': 100, 'protein': 10}
 
-    with patch('src.utils.data_collection.Translator', side_effect=Exception('Init Error')):
+    with patch('src.utils.data_collection._build_translator', side_effect=Exception('Init Error')):
         result = translate_nutrients(nutrients, source_lang='en', target_lang='pt')
 
         assert result['success'] is False
         assert result['translated'] == nutrients
         assert 'Init Error' in result['error']
+
+
+def test_translate_nutrients_dependency_import_failure():
+    """Should fail gracefully when googletrans (or its deps) cannot import."""
+    nutrients = {'calories': 120}
+
+    with patch(
+        'src.utils.data_collection._build_translator',
+        side_effect=ModuleNotFoundError("No module named 'cgi'"),
+    ):
+        result = translate_nutrients(nutrients, source_lang='en', target_lang='pt')
+
+    assert result['success'] is False
+    assert result['translated'] == nutrients
+    assert "No module named 'cgi'" in result['error']

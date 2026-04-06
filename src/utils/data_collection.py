@@ -5,10 +5,16 @@ from PIL import Image, ImageEnhance, ImageFilter, ImageChops
 import logging
 import requests
 import random
-from googletrans import Translator
+import importlib
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def _build_translator() -> Any:
+    """Lazily import googletrans to avoid module-import crashes when optional deps break."""
+    translator_module = importlib.import_module('googletrans')
+    return translator_module.Translator()
 
 
 def validate_image(
@@ -204,7 +210,7 @@ def translate_nutrients(
         Dict with 'success' (bool), 'translated' (dict), and 'error' keys
     """
     try:
-        translator = Translator()
+        translator = _build_translator()
         translated_nutrients: Dict[str, Any] = {}
         for nutrient_name, value in nutrients.items():
             translation = translator.translate(
