@@ -1,7 +1,8 @@
 import pytest
 from PIL import Image
 import io
-from src.utils.data_collection import validate_image
+from unittest.mock import Mock, patch
+from src.utils.data_collection import validate_image, download_image
 
 
 def test_validate_image_valid_jpeg():
@@ -37,3 +38,40 @@ def test_validate_image_corrupted():
     result = validate_image(corrupted_bytes, min_width=200, min_height=200)
     assert result['valid'] is False
     assert 'corrupted' in result['reason'].lower()
+
+
+def test_download_image_success():
+    """Successful download should return image bytes"""
+    mock_response = Mock()
+    mock_response.status_code = 200
+    mock_response.content = b'fake image data'
+    
+    with patch('requests.get', return_value=mock_response):
+        result = download_image('http://example.com/image.jpg', timeout=10)
+        
+        assert result['success'] is True
+        assert result['data'] == b'fake image data'
+        assert result['url'] == 'http://example.com/image.jpg'
+
+
+def test_download_image_404():
+    """404 error should return failure"""
+    mock_response = Mock()
+    mock_response.status_code = 404
+    mock_response.raise_for_status.side_effect = Exception('404 Not Found')
+    
+    with patch('requests.get', return_value=mock_response):
+        result = download_image('http://example.com/missing.jpg', timeout=10)
+        
+        assert result['success'] is False
+        assert '404' in result['error']
+
+
+def test_download_image_timeout():
+    """Timeout should return failure"""
+    import requests
+    with patch('requests.get', side_effect=requests.exceptions.Timeout('Request timed out')):
+        result = download_image('http://example.com/slow.jpg', timeout=5)
+        
+        assert result['success'] is False
+        assert 'timeout' in result['error'].lower()

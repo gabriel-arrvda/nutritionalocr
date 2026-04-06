@@ -3,6 +3,7 @@
 from typing import Dict, Any, BinaryIO
 from PIL import Image
 import logging
+import requests
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -63,4 +64,54 @@ def validate_image(
             'height': 0,
             'format': None,
             'reason': f'Corrupted or invalid image: {str(e)}'
+        }
+
+
+def download_image(url: str, timeout: int = 30) -> Dict[str, Any]:
+    """
+    Download image from URL.
+    
+    Args:
+        url: Image URL
+        timeout: Request timeout in seconds
+        
+    Returns:
+        Dict with 'success' (bool), 'data' (bytes), 'url', and 'error' keys
+    """
+    try:
+        response = requests.get(url, timeout=timeout)
+        response.raise_for_status()
+        
+        return {
+            'success': True,
+            'data': response.content,
+            'url': url,
+            'error': None
+        }
+        
+    except requests.exceptions.Timeout:
+        logger.error(f"Download timeout for {url}")
+        return {
+            'success': False,
+            'data': None,
+            'url': url,
+            'error': f'Request timeout after {timeout}s'
+        }
+        
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"HTTP error for {url}: {e}")
+        return {
+            'success': False,
+            'data': None,
+            'url': url,
+            'error': str(e)
+        }
+        
+    except Exception as e:
+        logger.error(f"Download failed for {url}: {e}")
+        return {
+            'success': False,
+            'data': None,
+            'url': url,
+            'error': str(e)
         }
