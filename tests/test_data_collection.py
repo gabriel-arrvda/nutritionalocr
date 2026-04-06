@@ -1,8 +1,9 @@
 import pytest
 from PIL import Image
 import io
+import numpy as np
 from unittest.mock import Mock, patch
-from src.utils.data_collection import validate_image, download_image
+from src.utils.data_collection import validate_image, download_image, apply_augmentation
 
 
 def test_validate_image_valid_jpeg():
@@ -75,3 +76,42 @@ def test_download_image_timeout():
         
         assert result['success'] is False
         assert 'timeout' in result['error'].lower()
+
+
+def test_apply_augmentation_returns_correct_count():
+    """Should return requested number of augmented images"""
+    original_img = Image.new('RGB', (400, 400), color='green')
+    
+    results = apply_augmentation(original_img, num_variations=3, seed=42)
+    
+    assert len(results) == 3
+    for result in results:
+        assert 'image' in result
+        assert 'augmentation_type' in result
+        assert isinstance(result['image'], Image.Image)
+
+
+def test_apply_augmentation_images_are_different():
+    """Augmented images should differ from original"""
+    original_img = Image.new('RGB', (400, 400), color='red')
+    original_array = np.array(original_img)
+    
+    results = apply_augmentation(original_img, num_variations=2, seed=42)
+    
+    for result in results:
+        augmented_array = np.array(result['image'])
+        # At least some pixels should be different
+        assert not np.array_equal(original_array, augmented_array)
+
+
+def test_apply_augmentation_preserves_dimensions():
+    """Augmented images should have similar dimensions (±10%)"""
+    original_img = Image.new('RGB', (500, 600), color='blue')
+    
+    results = apply_augmentation(original_img, num_variations=3, seed=42)
+    
+    for result in results:
+        width, height = result['image'].size
+        # Allow ±10% variation from crop/resize
+        assert 450 <= width <= 550
+        assert 540 <= height <= 660

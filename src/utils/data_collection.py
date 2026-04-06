@@ -1,9 +1,10 @@
 """Data collection utility functions for nutrition label OCR"""
 
-from typing import Dict, Any, BinaryIO
-from PIL import Image
+from typing import Dict, Any, BinaryIO, List, Optional
+from PIL import Image, ImageEnhance, ImageFilter, ImageChops
 import logging
 import requests
+import random
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -115,3 +116,56 @@ def download_image(url: str, timeout: int = 30) -> Dict[str, Any]:
             'url': url,
             'error': str(e)
         }
+
+
+def apply_augmentation(
+    image: Image.Image,
+    num_variations: int = 3,
+    seed: Optional[int] = None
+) -> List[Dict[str, Any]]:
+    """
+    Apply random image augmentations and return generated variations.
+
+    Augmentations include rotation, brightness/contrast adjustment,
+    gaussian blur, and crop/resize.
+    """
+    rng = random.Random(seed)
+    augmentations = ['rotation', 'brightness_contrast', 'gaussian_blur', 'crop_resize']
+    width, height = image.size
+
+    results: List[Dict[str, Any]] = []
+    for _ in range(num_variations):
+        augmentation_type = rng.choice(augmentations)
+        augmented = image.copy()
+
+        if augmentation_type == 'rotation':
+            angle = rng.uniform(-20, 20)
+            augmented = augmented.rotate(angle, resample=Image.Resampling.BICUBIC)
+        elif augmentation_type == 'brightness_contrast':
+            brightness = rng.uniform(0.7, 1.3)
+            contrast = rng.uniform(0.7, 1.3)
+            augmented = ImageEnhance.Brightness(augmented).enhance(brightness)
+            augmented = ImageEnhance.Contrast(augmented).enhance(contrast)
+        elif augmentation_type == 'gaussian_blur':
+            blur_radius = rng.uniform(0.5, 2.0)
+            augmented = augmented.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+        elif augmentation_type == 'crop_resize':
+            crop_ratio = rng.uniform(0.8, 0.95)
+            crop_w = max(1, int(width * crop_ratio))
+            crop_h = max(1, int(height * crop_ratio))
+            max_left = max(0, width - crop_w)
+            max_top = max(0, height - crop_h)
+            left = rng.randint(0, max_left) if max_left > 0 else 0
+            top = rng.randint(0, max_top) if max_top > 0 else 0
+            augmented = augmented.crop((left, top, left + crop_w, top + crop_h))
+            augmented = augmented.resize((width, height), resample=Image.Resampling.BICUBIC)
+
+        if ImageChops.difference(image, augmented).getbbox() is None:
+            augmented = augmented.rotate(15, resample=Image.Resampling.BICUBIC, fillcolor=(0, 0, 0))
+
+        results.append({
+            'image': augmented,
+            'augmentation_type': augmentation_type
+        })
+
+    return results
