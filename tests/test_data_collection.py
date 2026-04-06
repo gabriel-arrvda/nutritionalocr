@@ -2,6 +2,7 @@ import pytest
 from PIL import Image
 import io
 import numpy as np
+import hashlib
 from unittest.mock import Mock, patch
 from src.utils.data_collection import validate_image, download_image, apply_augmentation
 
@@ -115,3 +116,57 @@ def test_apply_augmentation_preserves_dimensions():
         # Allow ±10% variation from crop/resize
         assert 450 <= width <= 550
         assert 540 <= height <= 660
+
+
+def test_apply_augmentation_combines_one_or_two_techniques_and_metadata():
+    """Each variation should report 1-2 techniques and include combined cases."""
+    original_img = Image.new('RGB', (320, 320), color='yellow')
+
+    results = apply_augmentation(original_img, num_variations=20, seed=7)
+
+    technique_counts = []
+    for result in results:
+        augmentation_type = result['augmentation_type']
+        assert isinstance(augmentation_type, str)
+        applied = [part for part in augmentation_type.split('+') if part and part != 'fallback_rotation']
+        technique_counts.append(len(applied))
+        assert len(applied) in {1, 2}
+
+    assert 2 in technique_counts
+
+
+def test_apply_augmentation_seed_reproducibility():
+    """Same seed should produce consistent augmentation metadata and image content."""
+    original_img = Image.new('RGB', (300, 300), color='purple')
+
+    first = apply_augmentation(original_img, num_variations=5, seed=99)
+    second = apply_augmentation(original_img, num_variations=5, seed=99)
+
+    first_types = [item['augmentation_type'] for item in first]
+    second_types = [item['augmentation_type'] for item in second]
+    assert first_types == second_types
+
+    first_hashes = [
+        hashlib.sha256(item['image'].tobytes()).hexdigest()
+        for item in first
+    ]
+    second_hashes = [
+        hashlib.sha256(item['image'].tobytes()).hexdigest()
+        for item in second
+    ]
+    assert first_hashes == second_hashes
+
+
+def test_apply_augmentation_fallback_metadata_and_non_rgb_fillcolor():
+    """Fallback should be reflected in metadata and work for non-RGB modes."""
+    original_img = Image.new('L', (128, 128), color=128)
+
+    with patch('src.utils.data_collection.ImageChops.difference') as difference_mock:
+        difference_result = Mock()
+        difference_result.getbbox.return_value = None
+        difference_mock.return_value = difference_result
+
+        results = apply_augmentation(original_img, num_variations=1, seed=1)
+
+    assert len(results) == 1
+    assert 'fallback_rotation' in results[0]['augmentation_type']

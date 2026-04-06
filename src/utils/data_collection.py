@@ -126,30 +126,27 @@ def apply_augmentation(
     """
     Apply random image augmentations and return generated variations.
 
-    Augmentations include rotation, brightness/contrast adjustment,
+    Each variation applies 1-2 randomly selected augmentation techniques.
+    Techniques include rotation, brightness/contrast adjustment,
     gaussian blur, and crop/resize.
     """
     rng = random.Random(seed)
     augmentations = ['rotation', 'brightness_contrast', 'gaussian_blur', 'crop_resize']
     width, height = image.size
 
-    results: List[Dict[str, Any]] = []
-    for _ in range(num_variations):
-        augmentation_type = rng.choice(augmentations)
-        augmented = image.copy()
-
-        if augmentation_type == 'rotation':
+    def apply_single_augmentation(augmented_image: Image.Image, augmentation_name: str) -> Image.Image:
+        if augmentation_name == 'rotation':
             angle = rng.uniform(-20, 20)
-            augmented = augmented.rotate(angle, resample=Image.Resampling.BICUBIC)
-        elif augmentation_type == 'brightness_contrast':
+            return augmented_image.rotate(angle, resample=Image.Resampling.BICUBIC)
+        if augmentation_name == 'brightness_contrast':
             brightness = rng.uniform(0.7, 1.3)
             contrast = rng.uniform(0.7, 1.3)
-            augmented = ImageEnhance.Brightness(augmented).enhance(brightness)
-            augmented = ImageEnhance.Contrast(augmented).enhance(contrast)
-        elif augmentation_type == 'gaussian_blur':
+            adjusted = ImageEnhance.Brightness(augmented_image).enhance(brightness)
+            return ImageEnhance.Contrast(adjusted).enhance(contrast)
+        if augmentation_name == 'gaussian_blur':
             blur_radius = rng.uniform(0.5, 2.0)
-            augmented = augmented.filter(ImageFilter.GaussianBlur(radius=blur_radius))
-        elif augmentation_type == 'crop_resize':
+            return augmented_image.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+        if augmentation_name == 'crop_resize':
             crop_ratio = rng.uniform(0.8, 0.95)
             crop_w = max(1, int(width * crop_ratio))
             crop_h = max(1, int(height * crop_ratio))
@@ -157,15 +154,33 @@ def apply_augmentation(
             max_top = max(0, height - crop_h)
             left = rng.randint(0, max_left) if max_left > 0 else 0
             top = rng.randint(0, max_top) if max_top > 0 else 0
-            augmented = augmented.crop((left, top, left + crop_w, top + crop_h))
-            augmented = augmented.resize((width, height), resample=Image.Resampling.BICUBIC)
+            cropped = augmented_image.crop((left, top, left + crop_w, top + crop_h))
+            return cropped.resize((width, height), resample=Image.Resampling.BICUBIC)
+        return augmented_image
 
-        if ImageChops.difference(image, augmented).getbbox() is None:
-            augmented = augmented.rotate(15, resample=Image.Resampling.BICUBIC, fillcolor=(0, 0, 0))
+    def get_mode_aware_fillcolor(target_image: Image.Image) -> Any:
+        return Image.new(target_image.mode, (1, 1), 0).getpixel((0, 0))
+
+    results: List[Dict[str, Any]] = []
+    for _ in range(num_variations):
+        augmented = image.copy()
+        applied_techniques: List[str] = []
+
+        num_techniques = rng.randint(1, 2)
+        selected_techniques = rng.sample(augmentations, k=num_techniques)
+        for technique in selected_techniques:
+            augmented = apply_single_augmentation(augmented, technique)
+            applied_techniques.append(technique)
+
+        fallback_used = ImageChops.difference(image, augmented).getbbox() is None
+        if fallback_used:
+            fillcolor = get_mode_aware_fillcolor(augmented)
+            augmented = augmented.rotate(15, resample=Image.Resampling.BICUBIC, fillcolor=fillcolor)
+            applied_techniques.append('fallback_rotation')
 
         results.append({
             'image': augmented,
-            'augmentation_type': augmentation_type
+            'augmentation_type': '+'.join(applied_techniques)
         })
 
     return results
