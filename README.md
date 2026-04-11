@@ -139,6 +139,69 @@ After collecting data:
 3. Proceed to **Phase 2: OCR Model Training**
 4. Build API backend (Phase 3)
 
+## Fase 2: OCR Training (full pipeline orchestration)
+
+### CLI dry-run (default)
+
+```bash
+python3 scripts/train_ocr.py --dry-run --processed-csv data/processed/consolidated_dataset.csv --image-root data/images
+```
+
+No modo `--dry-run`, a pipeline valida dataset, gera manifests e simula estágios de treino/avaliação/export sem treino pesado.
+Status retornado: `dry_run_ready`.
+
+### CLI execução com `--execute`
+
+```bash
+python3 scripts/train_ocr.py --execute --processed-csv data/processed/consolidated_dataset.csv --image-root data/images
+```
+
+Pré-requisitos de execução:
+
+- PaddleOCR/PaddlePaddle instalados no ambiente (`requirements.txt`)
+- Perfil de GPU compatível com a configuração do pipeline (CUDA ou MPS quando `gpu_profile.required=true`)
+- Dataset processado disponível em `--processed-csv`
+
+`--execute` executa o fluxo completo de orquestração de estágios (teacher-pass, Stage A reconhecimento com weighted sampling + early stopping, Stage B detecção, avaliação e export) com hooks de comando explícitos para PaddleOCR.
+Status retornado: `completed`.
+
+### Notebook de treinamento
+
+```bash
+jupyter notebook notebooks/02_ocr_training.ipynb
+```
+
+### Artefatos esperados no fluxo
+
+```
+logs/
+└── training/
+    ├── dataset_validation_report.json
+    ├── evaluation_report.json
+    ├── baseline_vs_best.json
+    ├── metadata_bundle.json
+    ├── model_export.tar.gz
+    ├── recognition/
+    └── detection/
+data/
+└── processed/
+    └── training/
+        ├── manifest_train.csv
+        ├── manifest_val.csv
+        └── manifest_test.csv
+```
+
+`evaluation_report.json` inclui:
+- CER/WER (overall + por idioma)
+- precisão/recall/F1 de detecção
+- bloco `baseline_vs_best`
+
+`metadata_bundle.json` inclui:
+- `dataset_hash`
+- hiperparâmetros
+- métricas consolidadas
+- `git_sha`
+
 ## Validação Final (Task 13)
 
 - **Comando do plano (teste + coverage):**
