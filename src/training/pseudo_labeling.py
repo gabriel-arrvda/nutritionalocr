@@ -7,6 +7,7 @@ import pandas as pd
 
 SOURCE_KIND_COLUMN = "source_kind"
 SOURCE_KIND_PSEUDO_LABEL = "pseudo_label"
+LANGUAGE_COLUMN = "language"
 PREDICTION_TEXT_COLUMN = "prediction_text"
 LABEL_TEXT_COLUMN = "label_text"
 
@@ -57,3 +58,34 @@ def enforce_pseudo_ratio_cap(stats: Mapping[str, int | float], cfg: _PseudoRatio
     pseudo_ratio = pseudo / total
     if pseudo_ratio > cfg.max_pseudo_ratio_per_language:
         raise ValueError("pseudo-label ratio exceeds max_pseudo_ratio_per_language")
+
+
+def compute_pseudo_ratio_stats_by_language(
+    df: pd.DataFrame,
+) -> dict[str, dict[str, int]]:
+    required_columns = (LANGUAGE_COLUMN, SOURCE_KIND_COLUMN)
+    missing_columns = [column for column in required_columns if column not in df.columns]
+    if missing_columns:
+        missing = ", ".join(missing_columns)
+        raise ValueError(f"missing required columns: {missing}")
+
+    stats_by_language: dict[str, dict[str, int]] = {}
+    for language, group in df.groupby(LANGUAGE_COLUMN, sort=False):
+        pseudo_count = int((group[SOURCE_KIND_COLUMN] == SOURCE_KIND_PSEUDO_LABEL).sum())
+        human_count = int(len(group) - pseudo_count)
+        stats_by_language[str(language)] = {"pseudo": pseudo_count, "human": human_count}
+    return stats_by_language
+
+
+def validate_pseudo_ratio_stats_by_language(
+    stats_by_language: Mapping[str, Mapping[str, int | float]],
+    cfg: _PseudoRatioConfig,
+) -> None:
+    for language, stats in stats_by_language.items():
+        try:
+            enforce_pseudo_ratio_cap(stats, cfg)
+        except ValueError as exc:
+            raise ValueError(
+                "pseudo-label ratio exceeds max_pseudo_ratio_per_language "
+                f"for language: {language}"
+            ) from exc

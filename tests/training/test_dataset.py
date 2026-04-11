@@ -34,12 +34,22 @@ def test_training_config_defaults():
     assert config.min_image_height == 200
     assert isinstance(config.pseudo_label, PseudoLabelConfig)
     assert config.pseudo_label.confidence_threshold == 0.8
+    assert config.pseudo_label.max_pseudo_ratio_per_language == 0.7
 
 
 @pytest.mark.parametrize("value", [-0.1, 1.1])
 def test_pseudo_label_config_rejects_invalid_confidence_threshold(value: float):
     with pytest.raises(ValueError, match="confidence_threshold must be between 0 and 1"):
         PseudoLabelConfig(confidence_threshold=value)
+
+
+@pytest.mark.parametrize("value", [-0.1, 1.1])
+def test_pseudo_label_config_rejects_invalid_max_pseudo_ratio_per_language(value: float):
+    with pytest.raises(
+        ValueError,
+        match="max_pseudo_ratio_per_language must be between 0 and 1",
+    ):
+        PseudoLabelConfig(max_pseudo_ratio_per_language=value)
 
 
 @pytest.mark.parametrize(
@@ -68,6 +78,13 @@ def test_training_config_rejects_empty_languages():
 def test_training_config_rejects_blank_language_entries(languages: tuple[str, ...]):
     with pytest.raises(ValueError, match="languages must contain only non-blank strings"):
         TrainingConfig(languages=languages)
+
+
+def test_training_config_rejects_languages_as_plain_string():
+    with pytest.raises(
+        ValueError, match="languages must be a sequence of non-blank strings"
+    ):
+        TrainingConfig(languages="pt")
 
 
 def test_normalize_label_text_applies_nfc_and_collapses_whitespace():

@@ -36,6 +36,8 @@ def test_run_training_pipeline_returns_dry_run_report(tmp_path: Path):
 
     assert config.logs_dir.is_dir()
     assert config.data_dir.is_dir()
+    assert (config.logs_dir / "recognition").is_dir()
+    assert (config.logs_dir / "detection").is_dir()
     assert report["status"] == "dry_run_ok"
     assert report["stages"] == ["recognition", "detection"]
     assert report["artifacts"] == {
@@ -77,8 +79,32 @@ def test_run_training_pipeline_respects_non_default_config_directories(tmp_path:
 
     assert logs_dir.is_dir()
     assert data_dir.is_dir()
+    assert (logs_dir / "recognition").is_dir()
+    assert (logs_dir / "detection").is_dir()
     assert report["artifacts"]["recognition_run_dir"] == logs_dir / "recognition"
     assert report["artifacts"]["detection_run_dir"] == logs_dir / "detection"
+
+
+def test_run_training_pipeline_enforces_pseudo_ratio_caps(tmp_path: Path):
+    config = TrainingConfig(
+        data_dir=tmp_path / "data" / "processed" / "training",
+        logs_dir=tmp_path / "logs" / "training",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="pseudo-label ratio exceeds max_pseudo_ratio_per_language for language: en",
+    ):
+        run_training_pipeline(
+            config=config,
+            processed_csv=config.data_dir / "merged.csv",
+            image_root=tmp_path / "data" / "images",
+            dry_run=True,
+            pseudo_ratio_stats_by_language={
+                "pt": {"pseudo": 7, "human": 3},
+                "en": {"pseudo": 8, "human": 2},
+            },
+        )
 
 
 def test_train_ocr_cli_dry_run_prints_json_report(tmp_path: Path):

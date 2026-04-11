@@ -5,10 +5,13 @@ from pathlib import Path
 @dataclass(frozen=True)
 class PseudoLabelConfig:
     confidence_threshold: float = 0.8
+    max_pseudo_ratio_per_language: float = 0.7
 
     def __post_init__(self) -> None:
         if not 0 <= self.confidence_threshold <= 1:
             raise ValueError("confidence_threshold must be between 0 and 1")
+        if not 0 <= self.max_pseudo_ratio_per_language <= 1:
+            raise ValueError("max_pseudo_ratio_per_language must be between 0 and 1")
 
 
 @dataclass(frozen=True)
@@ -21,6 +24,9 @@ class TrainingConfig:
     pseudo_label: PseudoLabelConfig = field(default_factory=PseudoLabelConfig)
 
     def __post_init__(self) -> None:
+        if isinstance(self.languages, str):
+            raise ValueError("languages must be a sequence of non-blank strings")
+
         normalized_languages = tuple(self.languages)
         object.__setattr__(self, "languages", normalized_languages)
 
