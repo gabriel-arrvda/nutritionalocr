@@ -24,7 +24,17 @@ def _to_json_serializable(value: Any) -> Any:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run OCR training pipeline")
-    parser.add_argument("--dry-run", action="store_true", help="Run dry-run pipeline only")
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Run validation-only dry-run pipeline (default)",
+    )
+    mode_group.add_argument(
+        "--execute",
+        action="store_true",
+        help="Run executable pre-training validation flow",
+    )
     parser.add_argument(
         "--processed-csv",
         type=Path,
@@ -47,7 +57,7 @@ def main() -> int:
         config=config,
         processed_csv=args.processed_csv,
         image_root=args.image_root,
-        dry_run=args.dry_run,
+        dry_run=not args.execute,
     )
     print(json.dumps(_to_json_serializable(report), ensure_ascii=False))
     return 0

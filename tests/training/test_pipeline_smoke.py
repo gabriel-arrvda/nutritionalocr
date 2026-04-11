@@ -38,8 +38,9 @@ def test_run_training_pipeline_returns_dry_run_report(tmp_path: Path):
     assert config.data_dir.is_dir()
     assert (config.logs_dir / "recognition").is_dir()
     assert (config.logs_dir / "detection").is_dir()
-    assert report["status"] == "dry_run_ok"
+    assert report["status"] == "validated"
     assert report["stages"] == ["recognition", "detection"]
+    assert (config.logs_dir / "dataset_validation_report.json").is_file()
     assert report["artifacts"] == {
         "processed_csv": processed_csv,
         "image_root": image_root,
@@ -48,21 +49,28 @@ def test_run_training_pipeline_returns_dry_run_report(tmp_path: Path):
     }
 
 
-def test_run_training_pipeline_raises_for_non_dry_run(tmp_path: Path):
+def test_run_training_pipeline_non_dry_returns_structured_status(tmp_path: Path):
     config = TrainingConfig(
         data_dir=tmp_path / "data" / "processed" / "training",
         logs_dir=tmp_path / "logs" / "training",
     )
     processed_csv = config.data_dir / "merged.csv"
     image_root = tmp_path / "data" / "images"
+    processed_csv.parent.mkdir(parents=True, exist_ok=True)
+    image_root.mkdir(parents=True, exist_ok=True)
+    processed_csv.write_text(
+        "language,source_kind\npt,human\nen,human\nen,pseudo_label\n",
+        encoding="utf-8",
+    )
 
-    with pytest.raises(NotImplementedError):
-        run_training_pipeline(
-            config=config,
-            processed_csv=processed_csv,
-            image_root=image_root,
-            dry_run=False,
-        )
+    report = run_training_pipeline(
+        config=config,
+        processed_csv=processed_csv,
+        image_root=image_root,
+        dry_run=False,
+    )
+    assert report["status"] == "ready_for_training"
+    assert (config.logs_dir / "dataset_validation_report.json").is_file()
 
 
 def test_run_training_pipeline_respects_non_default_config_directories(tmp_path: Path):
@@ -116,7 +124,6 @@ def test_train_ocr_cli_dry_run_prints_json_report(tmp_path: Path):
         [
             sys.executable,
             str(repo_root / "scripts" / "train_ocr.py"),
-            "--dry-run",
             "--processed-csv",
             str(processed_csv),
             "--image-root",
@@ -130,7 +137,22 @@ def test_train_ocr_cli_dry_run_prints_json_report(tmp_path: Path):
 
     assert result.returncode == 0
     payload = json.loads(result.stdout)
-    assert payload["status"] == "dry_run_ok"
+    assert payload["status"] == "validated"
     assert payload["stages"] == ["recognition", "detection"]
     assert payload["artifacts"]["processed_csv"] == str(processed_csv)
     assert payload["artifacts"]["image_root"] == str(image_root)
+
+
+def test_train_ocr_cli_defaults_to_dry_run_and_succeeds(tmp_path: Path):
+    repo_root = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        [sys.executable, str(repo_root / "scripts" / "train_ocr.py")],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "validated"
