@@ -1,4 +1,7 @@
 from pathlib import Path
+import json
+import subprocess
+import sys
 
 import pytest
 
@@ -76,3 +79,32 @@ def test_run_training_pipeline_respects_non_default_config_directories(tmp_path:
     assert data_dir.is_dir()
     assert report["artifacts"]["recognition_run_dir"] == logs_dir / "recognition"
     assert report["artifacts"]["detection_run_dir"] == logs_dir / "detection"
+
+
+def test_train_ocr_cli_dry_run_prints_json_report(tmp_path: Path):
+    repo_root = Path(__file__).resolve().parents[2]
+    processed_csv = tmp_path / "data" / "processed" / "training" / "merged.csv"
+    image_root = tmp_path / "data" / "images"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(repo_root / "scripts" / "train_ocr.py"),
+            "--dry-run",
+            "--processed-csv",
+            str(processed_csv),
+            "--image-root",
+            str(image_root),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=repo_root,
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "dry_run_ok"
+    assert payload["stages"] == ["recognition", "detection"]
+    assert payload["artifacts"]["processed_csv"] == str(processed_csv)
+    assert payload["artifacts"]["image_root"] == str(image_root)

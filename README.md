@@ -139,6 +139,34 @@ After collecting data:
 3. Proceed to **Phase 2: OCR Model Training**
 4. Build API backend (Phase 3)
 
+## Fase 2: OCR Training (dry-run)
+
+### CLI dry-run
+
+```bash
+python3 scripts/train_ocr.py --dry-run --processed-csv data/processed/training/merged.csv --image-root data/images
+```
+
+O comando imprime um relatório JSON da pipeline e deve finalizar com código de saída `0`.
+
+### Notebook de treinamento
+
+```bash
+jupyter notebook notebooks/02_ocr_training.ipynb
+```
+
+### Artefatos esperados no dry-run
+
+```
+logs/
+└── training/
+    ├── recognition/
+    └── detection/
+data/
+└── processed/
+    └── training/
+```
+
 ## Validação Final (Task 13)
 
 - **Comando do plano (teste + coverage):**
