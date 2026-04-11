@@ -1,10 +1,7 @@
 from pathlib import Path
 
 
-def ensure_training_dirs(project_root: Path) -> dict[str, Path]:
-    logs_dir = project_root / "logs" / "training"
-    data_dir = project_root / "data" / "processed" / "training"
-
+def ensure_training_dirs(*, logs_dir: Path, data_dir: Path) -> dict[str, Path]:
     logs_dir.mkdir(parents=True, exist_ok=True)
     data_dir.mkdir(parents=True, exist_ok=True)
 

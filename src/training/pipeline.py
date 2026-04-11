@@ -18,10 +18,6 @@ class DryRunReport(TypedDict):
     artifacts: PipelineArtifacts
 
 
-def _project_root_from_logs_dir(logs_dir: Path) -> Path:
-    return logs_dir.parent.parent
-
-
 def run_training_pipeline(
     config: TrainingConfig,
     processed_csv: Path,
@@ -31,7 +27,7 @@ def run_training_pipeline(
     if not dry_run:
         raise NotImplementedError("Non-dry pipeline execution is not implemented yet")
 
-    ensure_training_dirs(_project_root_from_logs_dir(config.logs_dir))
+    ensure_training_dirs(logs_dir=config.logs_dir, data_dir=config.data_dir)
 
     return {
         "status": "dry_run_ok",

@@ -8,10 +8,12 @@ from src.training.pipeline import run_training_pipeline
 
 
 def test_ensure_training_dirs_creates_expected_directories(tmp_path: Path):
-    ensure_training_dirs(tmp_path)
+    logs_dir = tmp_path / "logs" / "training"
+    data_dir = tmp_path / "data" / "processed" / "training"
+    ensure_training_dirs(logs_dir=logs_dir, data_dir=data_dir)
 
-    assert (tmp_path / "logs" / "training").is_dir()
-    assert (tmp_path / "data" / "processed" / "training").is_dir()
+    assert logs_dir.is_dir()
+    assert data_dir.is_dir()
 
 
 def test_run_training_pipeline_returns_dry_run_report(tmp_path: Path):
@@ -56,3 +58,21 @@ def test_run_training_pipeline_raises_for_non_dry_run(tmp_path: Path):
             image_root=image_root,
             dry_run=False,
         )
+
+
+def test_run_training_pipeline_respects_non_default_config_directories(tmp_path: Path):
+    logs_dir = tmp_path / "custom" / "outputs" / "logs-dir"
+    data_dir = tmp_path / "custom" / "outputs" / "dataset-dir"
+    config = TrainingConfig(data_dir=data_dir, logs_dir=logs_dir)
+
+    report = run_training_pipeline(
+        config=config,
+        processed_csv=data_dir / "merged.csv",
+        image_root=tmp_path / "images",
+        dry_run=True,
+    )
+
+    assert logs_dir.is_dir()
+    assert data_dir.is_dir()
+    assert report["artifacts"]["recognition_run_dir"] == logs_dir / "recognition"
+    assert report["artifacts"]["detection_run_dir"] == logs_dir / "detection"
