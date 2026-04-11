@@ -143,6 +143,58 @@ def test_run_training_pipeline_dry_run_fails_on_empty_label_text(tmp_path: Path)
         run_training_pipeline(config=config, processed_csv=processed_csv, image_root=image_root, dry_run=True)
 
 
+def test_run_training_pipeline_allows_unlabeled_rows_before_teacher_pass_and_enforces_labels_after_merge(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import src.training.pipeline as pipeline_module
+
+    config = TrainingConfig(
+        data_dir=tmp_path / "data" / "processed" / "training",
+        logs_dir=tmp_path / "logs" / "training",
+        pseudo_label=PseudoLabelConfig(confidence_threshold=0.8, max_pseudo_ratio_per_language=0.8),
+    )
+    processed_csv = config.data_dir / "merged.csv"
+    image_root = tmp_path / "data" / "images"
+    _create_valid_dataset(processed_csv, image_root)
+    Image.new("RGB", (256, 256), color=(255, 255, 255)).save(image_root / "pt_3.png")
+    Image.new("RGB", (256, 256), color=(255, 255, 255)).save(image_root / "pt_4.png")
+    Image.new("RGB", (256, 256), color=(255, 255, 255)).save(image_root / "pt_5.png")
+    processed_csv.write_text(
+        "image_path,label_text,language,source_kind\n"
+        "pt_0.png,texto 0,pt,human_label\n"
+        "pt_1.png,texto 1,pt,human_label\n"
+        "pt_3.png,texto 3,pt,human_label\n"
+        "pt_2.png,,pt,human_label\n"
+        "pt_4.png,,pt,human_label\n"
+        "pt_5.png,,pt,human_label\n"
+        "en_0.png,texto 0,en,human_label\n"
+        "en_1.png,texto 1,en,human_label\n"
+        "en_2.png,texto 2,en,human_label\n",
+        encoding="utf-8",
+    )
+
+    def _fake_teacher(*args, **kwargs):
+        pseudo_candidates = config.data_dir / "pseudo_candidates.csv"
+        pseudo_candidates.parent.mkdir(parents=True, exist_ok=True)
+        pseudo_candidates.write_text(
+            "image_path,prediction_text,confidence,language\n"
+            "pt_2.png,texto pseudo,0.99,pt\n"
+            "pt_4.png,texto pseudo 4,0.98,pt\n"
+            "pt_5.png,texto pseudo 5,0.97,pt\n",
+            encoding="utf-8",
+        )
+        return {"status": "completed", "artifact_path": str(pseudo_candidates)}
+
+    monkeypatch.setattr(pipeline_module.stages, "teacher_pass_generate_pseudo_labels", _fake_teacher)
+
+    report = run_training_pipeline(config=config, processed_csv=processed_csv, image_root=image_root, dry_run=True)
+
+    assert report["status"] == "dry_run_ready"
+    assert "pt_2.png" in (report["artifacts"]["pseudo_candidates_csv"]).read_text(encoding="utf-8")
+    assert ",," not in report["artifacts"]["manifest_train_csv"].read_text(encoding="utf-8")
+
+
 def test_run_training_pipeline_dry_run_success_returns_ready_and_creates_manifests(
     tmp_path: Path,
 ):
@@ -180,6 +232,7 @@ def test_run_training_pipeline_dry_run_success_returns_ready_and_creates_manifes
     assert report["artifacts"]["evaluation_report_path"].is_file()
     assert report["artifacts"]["baseline_comparison_path"].is_file()
     assert report["artifacts"]["metadata_bundle_path"].is_file()
+    assert report["artifacts"]["inference_config_path"].is_file()
 
     evaluation_payload = json.loads(report["artifacts"]["evaluation_report_path"].read_text(encoding="utf-8"))
     assert "overall" in evaluation_payload["recognition"]
@@ -199,6 +252,7 @@ def test_run_training_pipeline_dry_run_success_returns_ready_and_creates_manifes
         "baseline_comparison_path": config.logs_dir / "baseline_vs_best.json",
         "export_bundle_path": config.logs_dir / "model_export.tar.gz",
         "metadata_bundle_path": config.logs_dir / "metadata_bundle.json",
+        "inference_config_path": config.logs_dir / "inference_config.json",
     }
 
 
@@ -433,6 +487,44 @@ def test_run_training_pipeline_execute_mode_fails_when_teacher_pass_does_not_cre
 
     with pytest.raises(FileNotFoundError, match="pseudo_candidates.csv"):
         run_training_pipeline(config=config, processed_csv=processed_csv, image_root=image_root, dry_run=False)
+
+
+def test_run_training_pipeline_persists_divergence_diagnostics_when_stage_a_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import src.training.pipeline as pipeline_module
+
+    config = TrainingConfig(
+        data_dir=tmp_path / "data" / "processed" / "training",
+        logs_dir=tmp_path / "logs" / "training",
+    )
+    processed_csv = config.data_dir / "merged.csv"
+    image_root = tmp_path / "data" / "images"
+    _create_valid_dataset(processed_csv, image_root)
+
+    def _fake_teacher(*args, **kwargs):
+        pseudo_candidates = config.data_dir / "pseudo_candidates.csv"
+        pseudo_candidates.parent.mkdir(parents=True, exist_ok=True)
+        pseudo_candidates.write_text("image_path,prediction_text,confidence,language\n", encoding="utf-8")
+        return {"status": "completed", "artifact_path": str(pseudo_candidates)}
+
+    def _failing_stage_a(*args, **kwargs):
+        raise RuntimeError("loss diverged with NaN")
+
+    monkeypatch.setattr(pipeline_module.stages, "teacher_pass_generate_pseudo_labels", _fake_teacher)
+    monkeypatch.setattr(pipeline_module.stages, "stage_a_train_recognizer", _failing_stage_a)
+
+    with pytest.raises(RuntimeError, match="loss diverged with NaN"):
+        run_training_pipeline(config=config, processed_csv=processed_csv, image_root=image_root, dry_run=False)
+
+    diagnostics_path = config.logs_dir / "divergence_diagnostics.json"
+    payload = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+    assert payload["stage"] == "stage_a_train_recognizer"
+    assert "loss diverged with NaN" in payload["error"]
+    assert payload["timestamp"]
+    assert "command" in payload
+    assert payload["context"]["processed_csv"] == str(processed_csv)
 
 
 def test_run_training_pipeline_execute_mode_fails_when_required_metrics_artifacts_are_missing(
@@ -754,3 +846,4 @@ def test_execute_export_bundle_is_tar_gz_with_expected_artifacts(
     assert "metadata/metadata_bundle.json" in names
     assert "metrics/evaluation_report.json" in names
     assert "metrics/baseline_vs_best.json" in names
+    assert "config/inference_config.json" in names

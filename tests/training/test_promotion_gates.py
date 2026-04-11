@@ -143,6 +143,44 @@ def test_run_training_pipeline_blocks_promotion_on_source_segmentation_degradati
     assert "pseudo_label validation metrics degraded" in evaluation_payload["promotion_gates"]["source_segmentation_degradation"]["message"]
 
 
+def test_run_training_pipeline_uses_multilingual_macro_metrics_for_baseline_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import src.training.pipeline as pipeline_module
+
+    config = TrainingConfig(
+        data_dir=tmp_path / "data" / "processed" / "training",
+        logs_dir=tmp_path / "logs" / "training",
+        languages=("pt", "en"),
+    )
+    processed_csv = config.data_dir / "merged.csv"
+    image_root = tmp_path / "data" / "images"
+    _create_valid_dataset(processed_csv, image_root)
+
+    monkeypatch.setattr(pipeline_module.stages, "teacher_pass_generate_pseudo_labels", _stub_teacher(config))
+    monkeypatch.setattr(
+        pipeline_module.stages,
+        "stage_a_train_recognizer",
+        _stub_stage_a_with_metrics(
+            config,
+            predictions_csv=(
+                "image_path,reference_text,predicted_text,language,source_kind\n"
+                "pt_0.png,aaaaaaaaaaaaaaaaaaaa,aaaaaaaaaaaaaaaaaaaa,pt,human_label\n"
+                "en_0.png,ok,xx,en,human_label\n"
+            ),
+            baseline={"cer": 0.2, "wer": 0.2},
+        ),
+    )
+    monkeypatch.setattr(pipeline_module.stages, "stage_b_train_detector", _stub_stage_b(config))
+
+    with pytest.raises(ValueError, match="Baseline regression gate failed"):
+        run_training_pipeline(config=config, processed_csv=processed_csv, image_root=image_root, dry_run=False)
+
+    evaluation_payload = json.loads((config.logs_dir / "evaluation_report.json").read_text(encoding="utf-8"))
+    assert evaluation_payload["promotion_gates"]["baseline_regression"]["status"] == "failed"
+    assert "multilingual CER/WER regressed beyond baseline threshold" in evaluation_payload["promotion_gates"]["baseline_regression"]["message"]
+
 def test_select_stage_b_hard_examples_prioritizes_stage_a_failures_and_low_confidence(tmp_path: Path):
     manifest_train_csv = tmp_path / "manifest_train.csv"
     manifest_train_csv.write_text(

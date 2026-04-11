@@ -151,6 +151,7 @@ def export(
     evaluation_report_path: Path,
     baseline_comparison_path: Path,
     training_config_path: Path,
+    inference_config_path: Path,
 ) -> dict[str, str]:
     required_paths = (
         recognition_checkpoint_path,
@@ -159,6 +160,7 @@ def export(
         evaluation_report_path,
         baseline_comparison_path,
         training_config_path,
+        inference_config_path,
     )
     missing_paths = [str(path) for path in required_paths if not path.is_file()]
     if missing_paths:
@@ -172,4 +174,5 @@ def export(
         archive.add(evaluation_report_path, arcname="metrics/evaluation_report.json")
         archive.add(baseline_comparison_path, arcname="metrics/baseline_vs_best.json")
         archive.add(training_config_path, arcname="config/training_config.json")
+        archive.add(inference_config_path, arcname="config/inference_config.json")
     return {"status": "completed", "artifact_path": str(export_bundle_path)}

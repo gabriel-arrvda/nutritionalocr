@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from datetime import datetime, timezone
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TypedDict
@@ -16,8 +17,10 @@ from src.training.io import ensure_training_dirs
 from src.training.metrics import compute_cer_wer_metrics, compute_detection_metrics
 from src.training.pseudo_labeling import (
     compute_pseudo_ratio_stats_by_language,
+    compute_pseudo_ratio_stats_by_language_source_bucket,
     merge_filtered_pseudo_labels,
     validate_pseudo_ratio_stats_by_language,
+    validate_pseudo_ratio_stats_by_language_source_bucket,
 )
 
 
@@ -34,6 +37,7 @@ class PipelineArtifacts(TypedDict):
     baseline_comparison_path: Path
     export_bundle_path: Path
     metadata_bundle_path: Path
+    inference_config_path: Path
 
 
 class PipelineStep(TypedDict):
@@ -57,6 +61,55 @@ def _resolve_git_sha() -> str:
     if result.returncode != 0:
         return "unknown"
     return result.stdout.strip() or "unknown"
+
+
+def _resolve_multilingual_macro_metrics(recognition_metrics: Mapping[str, object]) -> dict[str, float]:
+    per_language = recognition_metrics.get("per_language", {})
+    if not isinstance(per_language, Mapping) or not per_language:
+        return {"cer": 0.0, "wer": 0.0}
+
+    cer_values: list[float] = []
+    wer_values: list[float] = []
+    for language_metrics in per_language.values():
+        if not isinstance(language_metrics, Mapping):
+            continue
+        if "cer" not in language_metrics or "wer" not in language_metrics:
+            continue
+        cer_values.append(float(language_metrics["cer"]))
+        wer_values.append(float(language_metrics["wer"]))
+
+    if not cer_values or not wer_values:
+        return {"cer": 0.0, "wer": 0.0}
+    return {
+        "cer": sum(cer_values) / len(cer_values),
+        "wer": sum(wer_values) / len(wer_values),
+    }
+
+
+def _write_divergence_diagnostics(
+    *,
+    logs_dir: Path,
+    stage_name: str,
+    error: Exception,
+    context: Mapping[str, str],
+) -> Path:
+    diagnostics_path = logs_dir / "divergence_diagnostics.json"
+    command: str | None = None
+    if isinstance(error, subprocess.CalledProcessError):
+        if isinstance(error.cmd, (list, tuple)):
+            command = " ".join(str(item) for item in error.cmd)
+        else:
+            command = str(error.cmd)
+    payload = {
+        "stage": stage_name,
+        "error": str(error),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "command": command,
+        "context": dict(context),
+    }
+    diagnostics_path.parent.mkdir(parents=True, exist_ok=True)
+    diagnostics_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return diagnostics_path
 
 
 def _build_metrics_payload(
@@ -83,6 +136,7 @@ def _build_metrics_payload(
         return {
             "recognition": {
                 "overall": {"cer": 0.0, "wer": 0.0},
+                "macro": {"cer": 0.0, "wer": 0.0},
                 "per_language": {},
                 "per_source_kind": {},
             },
@@ -110,6 +164,7 @@ def _build_metrics_payload(
             }
         )
     recognition_metrics = compute_cer_wer_metrics(recognition_samples)
+    recognition_metrics["macro"] = _resolve_multilingual_macro_metrics(recognition_metrics)
     if "source_kind" not in recognition_df.columns and manifest_val_csv.is_file():
         manifest_df = pd.read_csv(manifest_val_csv)
         if {"image_path", "language", "source_kind"}.issubset(manifest_df.columns):
@@ -149,8 +204,8 @@ def _build_metrics_payload(
     baseline_payload = json.loads(baseline_metrics_json.read_text(encoding="utf-8"))
     baseline_metrics = {"cer": float(baseline_payload["cer"]), "wer": float(baseline_payload["wer"])}
     best_metrics = {
-        "cer": recognition_metrics["overall"]["cer"],
-        "wer": recognition_metrics["overall"]["wer"],
+        "cer": float(recognition_metrics["macro"]["cer"]),
+        "wer": float(recognition_metrics["macro"]["wer"]),
     }
     return {
         "recognition": recognition_metrics,
@@ -363,11 +418,15 @@ def run_training_pipeline(
         config=config,
         processed_csv=processed_csv,
         image_root=image_root,
+        allow_unlabeled_rows=True,
     )
     steps.append({"name": "validate_dataset", "status": "completed" if not validation_report["errors"] else "failed"})
 
     if validation_report["errors"] or dataset_df is None:
         raise ValueError("; ".join(validation_report["errors"]))
+
+    labeled_mask = dataset_df["label_text"].notna() & dataset_df["label_text"].astype(str).str.strip().ne("")
+    labeled_dataset_df = dataset_df.loc[labeled_mask].copy()
 
     execute = not dry_run
     stages.ensure_gpu_profile_available(config.gpu_profile, execute=execute)
@@ -389,27 +448,46 @@ def run_training_pipeline(
         pseudo_candidates_df = pd.DataFrame(columns=["image_path", "prediction_text", "confidence", "language"])
 
     merged_dataset_df = merge_filtered_pseudo_labels(
-        human_labels_df=dataset_df,
+        human_labels_df=labeled_dataset_df,
         pseudo_candidates_df=pseudo_candidates_df,
         cfg=config.pseudo_label,
     )
     steps.append({"name": "merge_filtered_pseudo_labels", "status": "completed"})
 
+    if merged_dataset_df["label_text"].isna().any() or merged_dataset_df["label_text"].astype(str).str.strip().eq("").any():
+        raise ValueError("required field 'label_text' must be non-empty")
+    if merged_dataset_df.empty:
+        raise ValueError("required field 'label_text' must be non-empty")
+
     stats_by_language = pseudo_ratio_stats_by_language
     if stats_by_language is None:
         stats_by_language = compute_pseudo_ratio_stats_by_language(merged_dataset_df)
     validate_pseudo_ratio_stats_by_language(stats_by_language, config.pseudo_label)
+    stats_by_bucket = compute_pseudo_ratio_stats_by_language_source_bucket(merged_dataset_df)
+    validate_pseudo_ratio_stats_by_language_source_bucket(stats_by_bucket, config.pseudo_label)
     steps.append({"name": "validate_pseudo_ratio", "status": "completed"})
 
     manifest_paths = write_training_manifests(validated_rows=merged_dataset_df, output_dir=config.data_dir)
     steps.append({"name": "build_manifests", "status": "completed"})
 
-    stage_a_result = stages.stage_a_train_recognizer(
-        manifest_train_csv=manifest_paths["train"],
-        recognition_run_dir=artifacts["recognition_run_dir"],
-        execute=execute,
-        stage_a_cfg=config.stage_a,
-    )
+    try:
+        stage_a_result = stages.stage_a_train_recognizer(
+            manifest_train_csv=manifest_paths["train"],
+            recognition_run_dir=artifacts["recognition_run_dir"],
+            execute=execute,
+            stage_a_cfg=config.stage_a,
+        )
+    except Exception as exc:
+        _write_divergence_diagnostics(
+            logs_dir=config.logs_dir,
+            stage_name="stage_a_train_recognizer",
+            error=exc,
+            context={
+                "processed_csv": str(processed_csv),
+                "manifest_train_csv": str(manifest_paths["train"]),
+            },
+        )
+        raise
     steps.append({"name": "stage_a_train_recognizer", "status": stage_a_result["status"]})
 
     stage_b_manifest_csv = select_stage_b_hard_examples(
@@ -420,11 +498,23 @@ def run_training_pipeline(
         require_stage_a_failures=execute,
     )
 
-    stage_b_result = stages.stage_b_train_detector(
-        manifest_train_csv=stage_b_manifest_csv,
-        detection_run_dir=artifacts["detection_run_dir"],
-        execute=execute,
-    )
+    try:
+        stage_b_result = stages.stage_b_train_detector(
+            manifest_train_csv=stage_b_manifest_csv,
+            detection_run_dir=artifacts["detection_run_dir"],
+            execute=execute,
+        )
+    except Exception as exc:
+        _write_divergence_diagnostics(
+            logs_dir=config.logs_dir,
+            stage_name="stage_b_train_detector",
+            error=exc,
+            context={
+                "processed_csv": str(processed_csv),
+                "manifest_train_csv": str(stage_b_manifest_csv),
+            },
+        )
+        raise
     steps.append({"name": "stage_b_train_detector", "status": stage_b_result["status"]})
 
     evaluation_report_path = config.logs_dir / "evaluation_report.json"
@@ -485,6 +575,7 @@ def run_training_pipeline(
 
     export_bundle_path = config.logs_dir / "model_export.tar.gz"
     training_config_path = config.logs_dir / "training_config.json"
+    inference_config_path = config.logs_dir / "inference_config.json"
     training_config_path.write_text(
         json.dumps(
             {
@@ -524,6 +615,25 @@ def run_training_pipeline(
         detection_checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         recognition_checkpoint_path.write_text("skipped_dry_run", encoding="utf-8")
         detection_checkpoint_path.write_text("skipped_dry_run", encoding="utf-8")
+    inference_config_path.write_text(
+        json.dumps(
+            {
+                "recognition_checkpoint_path": str(recognition_checkpoint_path),
+                "detection_checkpoint_path": str(detection_checkpoint_path),
+                "languages": list(config.languages),
+                "image_constraints": {
+                    "min_image_width": config.min_image_width,
+                    "min_image_height": config.min_image_height,
+                },
+                "pseudo_label": {
+                    "confidence_threshold": config.pseudo_label.confidence_threshold,
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     export_result = stages.export(
         export_bundle_path=export_bundle_path,
         recognition_checkpoint_path=recognition_checkpoint_path,
@@ -532,6 +642,7 @@ def run_training_pipeline(
         evaluation_report_path=evaluation_report_path,
         baseline_comparison_path=baseline_comparison_path,
         training_config_path=training_config_path,
+        inference_config_path=inference_config_path,
     )
     steps.append({"name": "export", "status": export_result["status"]})
 
@@ -551,5 +662,6 @@ def run_training_pipeline(
             "baseline_comparison_path": baseline_comparison_path,
             "export_bundle_path": export_bundle_path,
             "metadata_bundle_path": metadata_bundle_path,
+            "inference_config_path": inference_config_path,
         },
     }

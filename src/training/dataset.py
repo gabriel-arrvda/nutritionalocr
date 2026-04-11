@@ -57,13 +57,14 @@ def validate_training_dataset(
     config: TrainingConfig,
     processed_csv: Path,
     image_root: Path,
+    allow_unlabeled_rows: bool = False,
 ) -> tuple[dict[str, object], pd.DataFrame | None]:
     errors: list[str] = []
     warnings: list[str] = []
     rebalancing_guidance: list[str] = []
     validated_rows: pd.DataFrame | None = None
     required_columns = ("image_path", "label_text", "language", "source_kind")
-    required_text_fields = required_columns
+    required_text_fields = ("image_path", "language", "source_kind")
 
     if not processed_csv.is_file():
         errors.append(f"processed csv not found: {processed_csv}")
@@ -81,6 +82,12 @@ def validate_training_dataset(
                     field_value = row[field]
                     if pd.isna(field_value) or str(field_value).strip() == "":
                         errors.append(f"row {idx}: required field '{field}' must be non-empty")
+                        has_blank_required_field = True
+
+                label_value = row["label_text"]
+                if pd.isna(label_value) or str(label_value).strip() == "":
+                    if not allow_unlabeled_rows:
+                        errors.append(f"row {idx}: required field 'label_text' must be non-empty")
                         has_blank_required_field = True
 
                 if has_blank_required_field:
