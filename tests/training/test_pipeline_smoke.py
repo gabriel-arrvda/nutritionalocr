@@ -7,7 +7,7 @@ import tarfile
 import pytest
 from PIL import Image
 
-from src.training.config import PseudoLabelConfig, TrainingConfig
+from src.training.config import PromotionGateConfig, PseudoLabelConfig, TrainingConfig
 from src.training.io import ensure_training_dirs
 from src.training.pipeline import run_training_pipeline
 
@@ -99,6 +99,10 @@ def test_run_training_pipeline_dry_run_fails_on_invalid_dataset(tmp_path: Path):
         data_dir=tmp_path / "data" / "processed" / "training",
         logs_dir=tmp_path / "logs" / "training",
         pseudo_label=PseudoLabelConfig(confidence_threshold=0.8, max_pseudo_ratio_per_language=0.8),
+        promotion_gate=PromotionGateConfig(
+            max_source_cer_degradation=1.0,
+            max_source_wer_degradation=1.0,
+        ),
     )
     processed_csv = config.data_dir / "merged.csv"
     image_root = tmp_path / "data" / "images"
@@ -119,6 +123,10 @@ def test_run_training_pipeline_dry_run_fails_on_empty_label_text(tmp_path: Path)
         data_dir=tmp_path / "data" / "processed" / "training",
         logs_dir=tmp_path / "logs" / "training",
         pseudo_label=PseudoLabelConfig(confidence_threshold=0.8, max_pseudo_ratio_per_language=0.8),
+        promotion_gate=PromotionGateConfig(
+            max_source_cer_degradation=1.0,
+            max_source_wer_degradation=1.0,
+        ),
     )
     processed_csv = config.data_dir / "merged.csv"
     image_root = tmp_path / "data" / "images"
@@ -637,6 +645,10 @@ def test_execute_evaluation_report_includes_per_language_and_source_segmented_me
         data_dir=tmp_path / "data" / "processed" / "training",
         logs_dir=tmp_path / "logs" / "training",
         pseudo_label=PseudoLabelConfig(confidence_threshold=0.8, max_pseudo_ratio_per_language=0.8),
+        promotion_gate=PromotionGateConfig(
+            max_source_cer_degradation=1.0,
+            max_source_wer_degradation=1.0,
+        ),
     )
     processed_csv = config.data_dir / "merged.csv"
     image_root = tmp_path / "data" / "images"

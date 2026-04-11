@@ -502,3 +502,23 @@ def test_validate_training_dataset_rejects_invalid_source_kind(tmp_path: Path):
 
     assert report["status"] == "failed"
     assert any("invalid source_kind" in error for error in report["errors"])
+
+
+def test_validate_training_dataset_blocks_severe_language_imbalance_with_rebalancing_guidance(tmp_path: Path):
+    config = TrainingConfig(logs_dir=tmp_path / "logs" / "training", languages=("pt", "en", "es"))
+    processed_csv = tmp_path / "data" / "processed" / "training" / "merged.csv"
+    image_root = tmp_path / "data" / "images"
+    image_root.mkdir(parents=True, exist_ok=True)
+    for idx in range(8):
+        Image.new("RGB", (300, 300), color=(255, 255, 255)).save(image_root / f"pt_{idx}.png")
+    Image.new("RGB", (300, 300), color=(255, 255, 255)).save(image_root / "en_0.png")
+    rows = [f"pt_{idx}.png,abc {idx},pt,human_label\n" for idx in range(8)]
+    rows.append("en_0.png,abc 8,en,human_label\n")
+    _write_dataset_csv(processed_csv, rows)
+
+    report, _ = validate_training_dataset(config=config, processed_csv=processed_csv, image_root=image_root)
+
+    assert report["status"] == "failed"
+    assert any("severe language imbalance" in error for error in report["errors"])
+    assert "rebalancing_guidance" in report
+    assert any("Increase samples for underrepresented languages" in item for item in report["rebalancing_guidance"])

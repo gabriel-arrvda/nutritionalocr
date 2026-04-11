@@ -46,15 +46,38 @@ class PseudoLabelConfig:
 
 
 @dataclass(frozen=True)
+class PromotionGateConfig:
+    max_baseline_cer_regression: float = 0.0
+    max_baseline_wer_regression: float = 0.0
+    max_source_cer_degradation: float = 0.05
+    max_source_wer_degradation: float = 0.05
+    hard_example_confidence_threshold: float = 0.7
+
+    def __post_init__(self) -> None:
+        if self.max_baseline_cer_regression < 0:
+            raise ValueError("max_baseline_cer_regression must be greater than or equal to 0")
+        if self.max_baseline_wer_regression < 0:
+            raise ValueError("max_baseline_wer_regression must be greater than or equal to 0")
+        if self.max_source_cer_degradation < 0:
+            raise ValueError("max_source_cer_degradation must be greater than or equal to 0")
+        if self.max_source_wer_degradation < 0:
+            raise ValueError("max_source_wer_degradation must be greater than or equal to 0")
+        if not 0 <= self.hard_example_confidence_threshold <= 1:
+            raise ValueError("hard_example_confidence_threshold must be between 0 and 1")
+
+
+@dataclass(frozen=True)
 class TrainingConfig:
     data_dir: Path = Path("data/processed/training")
     logs_dir: Path = Path("logs/training")
     languages: tuple[str, ...] = ("pt", "en", "es", "fr", "de")
     min_image_width: int = 200
     min_image_height: int = 200
+    max_language_imbalance_ratio: float = 3.0
     pseudo_label: PseudoLabelConfig = field(default_factory=PseudoLabelConfig)
     stage_a: StageAConfig = field(default_factory=StageAConfig)
     gpu_profile: GPUProfileConfig = field(default_factory=GPUProfileConfig)
+    promotion_gate: PromotionGateConfig = field(default_factory=PromotionGateConfig)
 
     def __post_init__(self) -> None:
         if isinstance(self.languages, str):
@@ -71,3 +94,5 @@ class TrainingConfig:
 
         if self.min_image_width <= 0 or self.min_image_height <= 0:
             raise ValueError("min_image_width and min_image_height must be greater than 0")
+        if self.max_language_imbalance_ratio <= 1:
+            raise ValueError("max_language_imbalance_ratio must be greater than 1")

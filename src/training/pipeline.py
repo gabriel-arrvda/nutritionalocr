@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import subprocess
 from collections.abc import Mapping
@@ -10,7 +9,7 @@ from typing import TypedDict
 import pandas as pd
 
 from src.training import stages
-from src.training.config import TrainingConfig
+from src.training.config import PromotionGateConfig, TrainingConfig
 from src.training.dataset import validate_training_dataset, write_training_manifests
 from src.training.export import write_metadata_bundle
 from src.training.io import ensure_training_dirs
@@ -167,38 +166,184 @@ def _build_metrics_payload(
     }
 
 
+def _resolve_stage_a_predictions_path(stage_a_artifact_path: Path) -> Path:
+    if stage_a_artifact_path.is_file() and stage_a_artifact_path.suffix == ".csv":
+        return stage_a_artifact_path
+    return stage_a_artifact_path.parent / "val_predictions.csv"
+
+
+def _evaluate_promotion_gates(
+    *,
+    metrics_payload: dict[str, object],
+    gate_cfg: PromotionGateConfig,
+) -> tuple[dict[str, object], list[str]]:
+    gate_failures: list[str] = []
+    baseline_vs_best = metrics_payload.get("baseline_vs_best", {})
+    if not isinstance(baseline_vs_best, Mapping):
+        baseline_vs_best = {}
+    baseline_metrics = baseline_vs_best.get("baseline", {})
+    best_metrics = baseline_vs_best.get("best", {})
+
+    baseline_gate: dict[str, object]
+    if (
+        isinstance(baseline_metrics, Mapping)
+        and isinstance(best_metrics, Mapping)
+        and {"cer", "wer"}.issubset(baseline_metrics)
+        and {"cer", "wer"}.issubset(best_metrics)
+    ):
+        baseline_cer = float(baseline_metrics["cer"])
+        baseline_wer = float(baseline_metrics["wer"])
+        best_cer = float(best_metrics["cer"])
+        best_wer = float(best_metrics["wer"])
+        cer_regression = best_cer - baseline_cer
+        wer_regression = best_wer - baseline_wer
+        if (
+            cer_regression > gate_cfg.max_baseline_cer_regression
+            or wer_regression > gate_cfg.max_baseline_wer_regression
+        ):
+            message = (
+                "Current best multilingual CER/WER regressed beyond baseline threshold "
+                f"(cer_regression={cer_regression:.6f}, wer_regression={wer_regression:.6f}, "
+                f"allowed_cer={gate_cfg.max_baseline_cer_regression:.6f}, "
+                f"allowed_wer={gate_cfg.max_baseline_wer_regression:.6f})"
+            )
+            baseline_gate = {"status": "failed", "message": message}
+            gate_failures.append(f"Baseline regression gate failed: {message}")
+        else:
+            baseline_gate = {"status": "passed", "message": "Best multilingual CER/WER is within baseline threshold."}
+    else:
+        baseline_gate = {"status": "skipped", "message": "baseline_vs_best metrics unavailable for gate evaluation."}
+
+    source_gate: dict[str, object]
+    recognition_metrics = metrics_payload.get("recognition", {})
+    if not isinstance(recognition_metrics, Mapping):
+        recognition_metrics = {}
+    per_source_kind = recognition_metrics.get("per_source_kind", {})
+    if (
+        isinstance(per_source_kind, Mapping)
+        and "human_label" in per_source_kind
+        and "pseudo_label" in per_source_kind
+        and isinstance(per_source_kind["human_label"], Mapping)
+        and isinstance(per_source_kind["pseudo_label"], Mapping)
+    ):
+        human_metrics = per_source_kind["human_label"].get("overall", {})
+        pseudo_metrics = per_source_kind["pseudo_label"].get("overall", {})
+        if (
+            isinstance(human_metrics, Mapping)
+            and isinstance(pseudo_metrics, Mapping)
+            and {"cer", "wer"}.issubset(human_metrics)
+            and {"cer", "wer"}.issubset(pseudo_metrics)
+        ):
+            cer_degradation = float(pseudo_metrics["cer"]) - float(human_metrics["cer"])
+            wer_degradation = float(pseudo_metrics["wer"]) - float(human_metrics["wer"])
+            if (
+                cer_degradation > gate_cfg.max_source_cer_degradation
+                or wer_degradation > gate_cfg.max_source_wer_degradation
+            ):
+                message = (
+                    "pseudo_label validation metrics degraded beyond configured threshold "
+                    f"(cer_degradation={cer_degradation:.6f}, wer_degradation={wer_degradation:.6f}, "
+                    f"allowed_cer={gate_cfg.max_source_cer_degradation:.6f}, "
+                    f"allowed_wer={gate_cfg.max_source_wer_degradation:.6f})"
+                )
+                source_gate = {"status": "failed", "message": message}
+                gate_failures.append(f"Source-segmentation degradation gate failed: {message}")
+            else:
+                source_gate = {
+                    "status": "passed",
+                    "message": "pseudo_label validation metrics are within degradation threshold.",
+                }
+        else:
+            source_gate = {"status": "skipped", "message": "Source-kind overall CER/WER metrics unavailable."}
+    else:
+        source_gate = {"status": "skipped", "message": "human_label and pseudo_label metrics unavailable."}
+
+    overall_status = "failed" if gate_failures else "passed"
+    promotion_gates = {
+        "status": overall_status,
+        "baseline_regression": baseline_gate,
+        "source_segmentation_degradation": source_gate,
+    }
+    return promotion_gates, gate_failures
+
+
 def select_stage_b_hard_examples(
     *,
     manifest_train_csv: Path,
     stage_a_artifact_path: Path,
     output_manifest_csv: Path,
     hard_example_ratio: float = 0.5,
+    stage_a_failure_confidence_threshold: float = 0.7,
+    require_stage_a_failures: bool = False,
 ) -> Path:
     if not 0 < hard_example_ratio <= 1:
         raise ValueError("hard_example_ratio must satisfy 0 < hard_example_ratio <= 1")
+    if not 0 <= stage_a_failure_confidence_threshold <= 1:
+        raise ValueError("stage_a_failure_confidence_threshold must be between 0 and 1")
 
     manifest_df = pd.read_csv(manifest_train_csv)
     if manifest_df.empty:
         raise ValueError("manifest_train_csv cannot be empty")
 
-    stage_a_signal = (
-        stage_a_artifact_path.read_text(encoding="utf-8")
-        if stage_a_artifact_path.is_file()
-        else str(stage_a_artifact_path)
-    )
-
-    def _score_row(row: pd.Series) -> int:
-        payload = (
-            f"{stage_a_signal}|{row['image_path']}|{row['label_text']}|"
-            f"{row['language']}|{row['source_kind']}"
+    stage_a_predictions_path = _resolve_stage_a_predictions_path(stage_a_artifact_path)
+    if not stage_a_predictions_path.is_file():
+        if require_stage_a_failures:
+            raise FileNotFoundError(
+                "stage_a recognition failures unavailable: expected predictions artifact at "
+                f"{stage_a_predictions_path}"
+            )
+        scored_df = manifest_df.copy()
+        scored_df["_failure_mismatch"] = 0
+        scored_df["_failure_low_confidence"] = 0
+        scored_df["_confidence_sort"] = 1.0
+    else:
+        stage_a_predictions_df = pd.read_csv(stage_a_predictions_path)
+        required_prediction_columns = {"image_path", "reference_text", "predicted_text"}
+        if not required_prediction_columns.issubset(stage_a_predictions_df.columns):
+            raise ValueError(
+                "stage_a predictions missing required columns: "
+                f"{', '.join(sorted(required_prediction_columns - set(stage_a_predictions_df.columns)))}"
+            )
+        stage_a_predictions_df = stage_a_predictions_df.copy()
+        if "language" not in stage_a_predictions_df.columns:
+            stage_a_predictions_df["language"] = ""
+        if "confidence" not in stage_a_predictions_df.columns:
+            stage_a_predictions_df["confidence"] = 1.0
+        stage_a_predictions_df["_failure_mismatch"] = (
+            stage_a_predictions_df["reference_text"].astype(str) != stage_a_predictions_df["predicted_text"].astype(str)
+        ).astype(int)
+        stage_a_predictions_df["_failure_low_confidence"] = (
+            stage_a_predictions_df["confidence"].astype(float) < stage_a_failure_confidence_threshold
+        ).astype(int)
+        stage_a_predictions_df["_confidence_sort"] = stage_a_predictions_df["confidence"].astype(float)
+        scored_df = manifest_df.merge(
+            stage_a_predictions_df[
+                [
+                    "image_path",
+                    "language",
+                    "_failure_mismatch",
+                    "_failure_low_confidence",
+                    "_confidence_sort",
+                ]
+            ],
+            on=["image_path", "language"],
+            how="left",
         )
-        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-        return int(digest[:15], 16)
+        scored_df["_failure_mismatch"] = scored_df["_failure_mismatch"].fillna(0).astype(int)
+        scored_df["_failure_low_confidence"] = scored_df["_failure_low_confidence"].fillna(0).astype(int)
+        scored_df["_confidence_sort"] = scored_df["_confidence_sort"].fillna(1.0).astype(float)
 
-    scored_df = manifest_df.copy()
-    scored_df["_hard_score"] = scored_df.apply(_score_row, axis=1)
+    scored_df["_hard_rank"] = range(len(scored_df))
     hard_example_count = max(1, int(len(scored_df) * hard_example_ratio))
-    hard_examples_df = scored_df.nlargest(hard_example_count, "_hard_score").drop(columns=["_hard_score"])
+    hard_examples_df = (
+        scored_df.sort_values(
+            by=["_failure_mismatch", "_failure_low_confidence", "_confidence_sort", "_hard_rank"],
+            ascending=[False, False, True, True],
+            kind="mergesort",
+        )
+        .head(hard_example_count)
+        .drop(columns=["_failure_mismatch", "_failure_low_confidence", "_confidence_sort", "_hard_rank"])
+    )
     output_manifest_csv.parent.mkdir(parents=True, exist_ok=True)
     hard_examples_df.to_csv(output_manifest_csv, index=False)
     return output_manifest_csv
@@ -271,6 +416,8 @@ def run_training_pipeline(
         manifest_train_csv=manifest_paths["train"],
         stage_a_artifact_path=Path(stage_a_result["artifact_path"]),
         output_manifest_csv=config.data_dir / "manifest_stage_b_hard_examples.csv",
+        stage_a_failure_confidence_threshold=config.promotion_gate.hard_example_confidence_threshold,
+        require_stage_a_failures=execute,
     )
 
     stage_b_result = stages.stage_b_train_detector(
@@ -292,6 +439,11 @@ def run_training_pipeline(
         manifest_val_csv=manifest_paths["val"],
         execute=execute,
     )
+    promotion_gates_payload, promotion_gate_failures = _evaluate_promotion_gates(
+        metrics_payload=metrics_payload,
+        gate_cfg=config.promotion_gate,
+    )
+    metrics_payload["promotion_gates"] = promotion_gates_payload
     evaluate_result = stages.evaluate(
         evaluation_report_path=evaluation_report_path,
         metrics_payload=metrics_payload,
@@ -301,6 +453,8 @@ def run_training_pipeline(
         encoding="utf-8",
     )
     steps.append({"name": "evaluate", "status": evaluate_result["status"]})
+    if promotion_gate_failures:
+        raise ValueError("; ".join(promotion_gate_failures))
 
     metadata_bundle_path = config.logs_dir / "metadata_bundle.json"
     metadata_path = write_metadata_bundle(
@@ -317,6 +471,13 @@ def run_training_pipeline(
                 "confidence_threshold": config.pseudo_label.confidence_threshold,
                 "max_pseudo_ratio_per_language": config.pseudo_label.max_pseudo_ratio_per_language,
             },
+            "promotion_gate": {
+                "max_baseline_cer_regression": config.promotion_gate.max_baseline_cer_regression,
+                "max_baseline_wer_regression": config.promotion_gate.max_baseline_wer_regression,
+                "max_source_cer_degradation": config.promotion_gate.max_source_cer_degradation,
+                "max_source_wer_degradation": config.promotion_gate.max_source_wer_degradation,
+                "hard_example_confidence_threshold": config.promotion_gate.hard_example_confidence_threshold,
+            },
         },
         metrics=metrics_payload,
         git_sha=_resolve_git_sha(),
@@ -332,6 +493,7 @@ def run_training_pipeline(
                 "languages": list(config.languages),
                 "min_image_width": config.min_image_width,
                 "min_image_height": config.min_image_height,
+                "max_language_imbalance_ratio": config.max_language_imbalance_ratio,
                 "stage_a": {
                     "weighted_sampling_human_weight": config.stage_a.weighted_sampling_human_weight,
                     "weighted_sampling_pseudo_weight": config.stage_a.weighted_sampling_pseudo_weight,
@@ -341,6 +503,13 @@ def run_training_pipeline(
                 "pseudo_label": {
                     "confidence_threshold": config.pseudo_label.confidence_threshold,
                     "max_pseudo_ratio_per_language": config.pseudo_label.max_pseudo_ratio_per_language,
+                },
+                "promotion_gate": {
+                    "max_baseline_cer_regression": config.promotion_gate.max_baseline_cer_regression,
+                    "max_baseline_wer_regression": config.promotion_gate.max_baseline_wer_regression,
+                    "max_source_cer_degradation": config.promotion_gate.max_source_cer_degradation,
+                    "max_source_wer_degradation": config.promotion_gate.max_source_wer_degradation,
+                    "hard_example_confidence_threshold": config.promotion_gate.hard_example_confidence_threshold,
                 },
             },
             ensure_ascii=False,

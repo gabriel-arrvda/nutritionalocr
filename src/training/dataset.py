@@ -60,6 +60,7 @@ def validate_training_dataset(
 ) -> tuple[dict[str, object], pd.DataFrame | None]:
     errors: list[str] = []
     warnings: list[str] = []
+    rebalancing_guidance: list[str] = []
     validated_rows: pd.DataFrame | None = None
     required_columns = ("image_path", "label_text", "language", "source_kind")
     required_text_fields = required_columns
@@ -114,6 +115,37 @@ def validate_training_dataset(
                 except (UnidentifiedImageError, OSError):
                     errors.append(f"row {idx}: unreadable image '{resolved_path}'")
 
+            language_counts = {
+                language: int((validated_rows["language"].astype(str).str.strip() == language).sum())
+                for language in config.languages
+            }
+            non_zero_language_counts = [count for count in language_counts.values() if count > 0]
+            missing_languages = [language for language, count in language_counts.items() if count == 0]
+            imbalance_ratio = (
+                float(max(non_zero_language_counts)) / float(min(non_zero_language_counts))
+                if len(non_zero_language_counts) >= 2
+                else 0.0
+            )
+            if missing_languages:
+                warnings.append(
+                    "configured language(s) absent in dataset: "
+                    f"{', '.join(missing_languages)}"
+                )
+            has_severe_imbalance = len(non_zero_language_counts) >= 2 and imbalance_ratio > config.max_language_imbalance_ratio
+            if has_severe_imbalance:
+                errors.append(
+                    "severe language imbalance detected: "
+                    f"counts={language_counts}, "
+                    f"max_language_imbalance_ratio={config.max_language_imbalance_ratio}"
+                )
+                rebalancing_guidance.extend(
+                    [
+                        "Increase samples for underrepresented languages before training.",
+                        "Reduce oversampled languages or add augmentation for missing languages.",
+                        "Rebuild manifests after rebalancing and rerun dataset validation.",
+                    ]
+                )
+
     if not image_root.exists():
         warnings.append(f"image root not found: {image_root}")
 
@@ -121,6 +153,7 @@ def validate_training_dataset(
         "status": "failed" if errors else "ok",
         "errors": errors,
         "warnings": warnings,
+        "rebalancing_guidance": rebalancing_guidance,
         "row_count": 0 if validated_rows is None else int(len(validated_rows)),
         "processed_csv": str(processed_csv),
         "image_root": str(image_root),
