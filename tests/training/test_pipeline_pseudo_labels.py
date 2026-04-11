@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import json
 import pandas as pd
 import pytest
 from PIL import Image
@@ -20,6 +21,27 @@ def _create_valid_dataset(processed_csv: Path, image_root: Path) -> None:
             rows.append(f"{image_name},texto {idx},{language},human_label\n")
     processed_csv.parent.mkdir(parents=True, exist_ok=True)
     processed_csv.write_text("".join(rows), encoding="utf-8")
+
+
+def _write_execute_metrics_artifacts(config: TrainingConfig) -> None:
+    recognition_predictions = config.logs_dir / "recognition" / "val_predictions.csv"
+    recognition_predictions.parent.mkdir(parents=True, exist_ok=True)
+    recognition_predictions.write_text(
+        "image_path,reference_text,predicted_text,language\n"
+        "pt_0.png,texto 0,texto 0,pt\n"
+        "en_0.png,texto 0,texta 0,en\n",
+        encoding="utf-8",
+    )
+    detection_metrics = config.logs_dir / "detection" / "metrics.json"
+    detection_metrics.parent.mkdir(parents=True, exist_ok=True)
+    detection_metrics.write_text(
+        json.dumps({"true_positives": 8, "false_positives": 2, "false_negatives": 1}),
+        encoding="utf-8",
+    )
+    (config.logs_dir / "baseline_metrics.json").write_text(
+        json.dumps({"cer": 0.5, "wer": 0.6}),
+        encoding="utf-8",
+    )
 
 
 def test_pipeline_runs_teacher_pass_and_merges_filtered_pseudo_labels_before_stage_a(
@@ -59,6 +81,7 @@ def test_pipeline_runs_teacher_pass_and_merges_filtered_pseudo_labels_before_sta
     def _fake_stage_a(*, manifest_train_csv: Path, recognition_run_dir: Path, execute: bool, stage_a_cfg):
         nonlocal captured_manifest_df
         captured_manifest_df = pd.read_csv(manifest_train_csv)
+        _write_execute_metrics_artifacts(config)
         return {"status": "completed", "artifact_path": str(recognition_run_dir / "recognizer.ckpt")}
 
     monkeypatch.setattr(pipeline_module.stages, "stage_a_train_recognizer", _fake_stage_a)

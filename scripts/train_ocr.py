@@ -47,6 +47,12 @@ def parse_args() -> argparse.Namespace:
         default=Path("data/images"),
         help="Path to image root directory",
     )
+    parser.add_argument(
+        "--baseline-metrics",
+        type=Path,
+        default=None,
+        help="Optional path to baseline metrics JSON artifact",
+    )
     return parser.parse_args()
 
 
@@ -58,6 +64,7 @@ def main() -> int:
         processed_csv=args.processed_csv,
         image_root=args.image_root,
         dry_run=not args.execute,
+        baseline_metrics_path=args.baseline_metrics,
     )
     print(json.dumps(_to_json_serializable(report), ensure_ascii=False))
     return 0

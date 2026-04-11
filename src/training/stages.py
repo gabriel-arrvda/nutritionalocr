@@ -10,14 +10,8 @@ from src.training.config import GPUProfileConfig, StageAConfig
 
 def _run_stage_command(*, command: list[str], execute: bool) -> dict[str, str]:
     if execute:
-        try:
-            subprocess.run(command, check=True, capture_output=True, text=True)
-            return {"status": "completed", "command": " ".join(command)}
-        except subprocess.CalledProcessError as exc:
-            stderr = (exc.stderr or "").lower()
-            if "no module named" in stderr and "paddleocr" in stderr:
-                return {"status": "completed", "command": " ".join(command)}
-            raise
+        subprocess.run(command, check=True, capture_output=True, text=True)
+        return {"status": "completed", "command": " ".join(command)}
     return {"status": "skipped_dry_run", "command": " ".join(command)}
 
 

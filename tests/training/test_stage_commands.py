@@ -7,7 +7,7 @@ from PIL import Image
 
 from src.training.config import GPUProfileConfig, StageAConfig, TrainingConfig
 from src.training.pipeline import run_training_pipeline
-from src.training.stages import build_stage_a_command
+from src.training.stages import build_stage_a_command, teacher_pass_generate_pseudo_labels
 
 
 def _create_valid_dataset(processed_csv: Path, image_root: Path) -> None:
@@ -65,4 +65,27 @@ def test_execute_mode_fails_fast_when_required_gpu_profile_is_unavailable(
             processed_csv=processed_csv,
             image_root=image_root,
             dry_run=False,
+        )
+
+
+def test_teacher_pass_execute_mode_raises_when_paddleocr_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import src.training.stages as stages_module
+
+    def _fake_subprocess_run(*args, **kwargs):
+        raise stages_module.subprocess.CalledProcessError(
+            returncode=1,
+            cmd=kwargs.get("args", args[0] if args else []),
+            stderr="ModuleNotFoundError: No module named 'paddleocr'",
+        )
+
+    monkeypatch.setattr(stages_module.subprocess, "run", _fake_subprocess_run)
+
+    with pytest.raises(stages_module.subprocess.CalledProcessError):
+        teacher_pass_generate_pseudo_labels(
+            processed_csv=tmp_path / "processed.csv",
+            output_csv=tmp_path / "pseudo_candidates.csv",
+            execute=True,
         )

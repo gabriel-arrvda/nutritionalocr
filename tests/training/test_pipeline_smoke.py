@@ -51,6 +51,27 @@ def _create_valid_dataset(processed_csv: Path, image_root: Path) -> None:
     processed_csv.write_text("".join(rows), encoding="utf-8")
 
 
+def _write_execute_metrics_artifacts(config: TrainingConfig) -> None:
+    recognition_predictions = config.logs_dir / "recognition" / "val_predictions.csv"
+    recognition_predictions.parent.mkdir(parents=True, exist_ok=True)
+    recognition_predictions.write_text(
+        "image_path,reference_text,predicted_text,language\n"
+        "pt_0.png,texto 0,texto 0,pt\n"
+        "en_0.png,texto 0,texta 0,en\n",
+        encoding="utf-8",
+    )
+    detection_metrics = config.logs_dir / "detection" / "metrics.json"
+    detection_metrics.parent.mkdir(parents=True, exist_ok=True)
+    detection_metrics.write_text(
+        json.dumps({"true_positives": 8, "false_positives": 2, "false_negatives": 1}),
+        encoding="utf-8",
+    )
+    (config.logs_dir / "baseline_metrics.json").write_text(
+        json.dumps({"cer": 0.5, "wer": 0.6}),
+        encoding="utf-8",
+    )
+
+
 def test_run_training_pipeline_dry_run_fails_on_invalid_dataset(tmp_path: Path):
     config = TrainingConfig(
         data_dir=tmp_path / "data" / "processed" / "training",
@@ -167,6 +188,7 @@ def test_run_training_pipeline_execute_mode_calls_stages_and_returns_completed_s
 
     def _fake_stage_a(*args, **kwargs):
         call_order.append("stage_a_train_recognizer")
+        _write_execute_metrics_artifacts(config)
         return {"status": "completed", "artifact_path": str(config.logs_dir / "recognition" / "checkpoint")}
 
     def _fake_stage_b(*args, **kwargs):
@@ -228,6 +250,7 @@ def test_run_training_pipeline_uses_stage_a_hard_examples_for_stage_b(
     def _fake_stage_a(*args, **kwargs):
         stage_a_artifact.parent.mkdir(parents=True, exist_ok=True)
         stage_a_artifact.write_text("stage-a-output", encoding="utf-8")
+        _write_execute_metrics_artifacts(config)
         return {"status": "completed", "artifact_path": str(stage_a_artifact)}
 
     def _fake_stage_b(*, manifest_train_csv: Path, detection_run_dir: Path, execute: bool):
@@ -235,15 +258,14 @@ def test_run_training_pipeline_uses_stage_a_hard_examples_for_stage_b(
         captured_stage_b_manifest = manifest_train_csv
         return {"status": "completed", "artifact_path": str(detection_run_dir / "detector.ckpt")}
 
+    def _fake_teacher(*args, **kwargs):
+        pseudo_candidates = config.data_dir / "pseudo_candidates.csv"
+        pseudo_candidates.parent.mkdir(parents=True, exist_ok=True)
+        pseudo_candidates.write_text("image_path,prediction_text,confidence,language\n", encoding="utf-8")
+        return {"status": "completed", "artifact_path": str(pseudo_candidates)}
+
     monkeypatch.setattr(pipeline_module.stages, "stage_a_train_recognizer", _fake_stage_a)
-    monkeypatch.setattr(
-        pipeline_module.stages,
-        "teacher_pass_generate_pseudo_labels",
-        lambda **kwargs: {
-            "status": "completed",
-            "artifact_path": str(config.data_dir / "pseudo_candidates.csv"),
-        },
-    )
+    monkeypatch.setattr(pipeline_module.stages, "teacher_pass_generate_pseudo_labels", _fake_teacher)
     monkeypatch.setattr(pipeline_module.stages, "stage_b_train_detector", _fake_stage_b)
     monkeypatch.setattr(
         pipeline_module.stages,
@@ -330,7 +352,7 @@ def test_train_ocr_cli_dry_run_prints_json_report(tmp_path: Path):
     assert result.returncode != 0
 
 
-def test_train_ocr_cli_execute_mode_reports_completed_status(tmp_path: Path):
+def test_train_ocr_cli_execute_mode_fails_fast_without_required_execute_artifacts(tmp_path: Path):
     repo_root = Path(__file__).resolve().parents[2]
     processed_csv = tmp_path / "data" / "processed" / "training" / "merged.csv"
     image_root = tmp_path / "data" / "images"
@@ -352,6 +374,230 @@ def test_train_ocr_cli_execute_mode_reports_completed_status(tmp_path: Path):
         cwd=repo_root,
     )
 
-    assert result.returncode == 0
-    payload = json.loads(result.stdout)
-    assert payload["status"] == "completed"
+    assert result.returncode != 0
+    stderr = result.stderr.lower()
+    assert "paddleocr" in stderr or "required metrics artifact" in stderr or "pseudo_candidates.csv" in stderr
+
+
+def test_run_training_pipeline_execute_mode_fails_when_teacher_pass_does_not_create_pseudo_candidates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import src.training.pipeline as pipeline_module
+
+    config = TrainingConfig(
+        data_dir=tmp_path / "data" / "processed" / "training",
+        logs_dir=tmp_path / "logs" / "training",
+    )
+    processed_csv = config.data_dir / "merged.csv"
+    image_root = tmp_path / "data" / "images"
+    _create_valid_dataset(processed_csv, image_root)
+
+    monkeypatch.setattr(
+        pipeline_module.stages,
+        "teacher_pass_generate_pseudo_labels",
+        lambda **kwargs: {"status": "completed", "artifact_path": str(config.data_dir / "pseudo_candidates.csv")},
+    )
+
+    with pytest.raises(FileNotFoundError, match="pseudo_candidates.csv"):
+        run_training_pipeline(config=config, processed_csv=processed_csv, image_root=image_root, dry_run=False)
+
+
+def test_run_training_pipeline_execute_mode_fails_when_required_metrics_artifacts_are_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import src.training.pipeline as pipeline_module
+
+    config = TrainingConfig(
+        data_dir=tmp_path / "data" / "processed" / "training",
+        logs_dir=tmp_path / "logs" / "training",
+    )
+    processed_csv = config.data_dir / "merged.csv"
+    image_root = tmp_path / "data" / "images"
+    _create_valid_dataset(processed_csv, image_root)
+
+    def _fake_teacher(*args, **kwargs):
+        pseudo_candidates = config.data_dir / "pseudo_candidates.csv"
+        pseudo_candidates.parent.mkdir(parents=True, exist_ok=True)
+        pseudo_candidates.write_text("image_path,prediction_text,confidence,language\n", encoding="utf-8")
+        return {"status": "completed", "artifact_path": str(pseudo_candidates)}
+
+    monkeypatch.setattr(pipeline_module.stages, "teacher_pass_generate_pseudo_labels", _fake_teacher)
+    monkeypatch.setattr(
+        pipeline_module.stages,
+        "stage_a_train_recognizer",
+        lambda **kwargs: {"status": "completed", "artifact_path": str(config.logs_dir / "recognition" / "recognizer.ckpt")},
+    )
+    monkeypatch.setattr(
+        pipeline_module.stages,
+        "stage_b_train_detector",
+        lambda **kwargs: {"status": "completed", "artifact_path": str(config.logs_dir / "detection" / "detector.ckpt")},
+    )
+    monkeypatch.setattr(
+        pipeline_module.stages,
+        "evaluate",
+        lambda **kwargs: {"status": "completed", "artifact_path": str(config.logs_dir / "evaluation_report.json")},
+    )
+    monkeypatch.setattr(
+        pipeline_module.stages,
+        "export",
+        lambda **kwargs: {"status": "completed", "artifact_path": str(config.logs_dir / "model_export.tar.gz")},
+    )
+
+    with pytest.raises(FileNotFoundError, match="val_predictions.csv|metrics.json|baseline_metrics.json"):
+        run_training_pipeline(config=config, processed_csv=processed_csv, image_root=image_root, dry_run=False)
+
+
+def test_run_training_pipeline_execute_mode_uses_real_baseline_metrics_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import src.training.pipeline as pipeline_module
+
+    config = TrainingConfig(
+        data_dir=tmp_path / "data" / "processed" / "training",
+        logs_dir=tmp_path / "logs" / "training",
+    )
+    processed_csv = config.data_dir / "merged.csv"
+    image_root = tmp_path / "data" / "images"
+    _create_valid_dataset(processed_csv, image_root)
+
+    def _fake_teacher(*args, **kwargs):
+        pseudo_candidates = config.data_dir / "pseudo_candidates.csv"
+        pseudo_candidates.parent.mkdir(parents=True, exist_ok=True)
+        pseudo_candidates.write_text("image_path,prediction_text,confidence,language\n", encoding="utf-8")
+        return {"status": "completed", "artifact_path": str(pseudo_candidates)}
+
+    def _fake_stage_a(*args, **kwargs):
+        _write_execute_metrics_artifacts(config)
+        return {"status": "completed", "artifact_path": str(config.logs_dir / "recognition" / "recognizer.ckpt")}
+
+    monkeypatch.setattr(pipeline_module.stages, "teacher_pass_generate_pseudo_labels", _fake_teacher)
+    monkeypatch.setattr(pipeline_module.stages, "stage_a_train_recognizer", _fake_stage_a)
+    monkeypatch.setattr(
+        pipeline_module.stages,
+        "stage_b_train_detector",
+        lambda **kwargs: {"status": "completed", "artifact_path": str(config.logs_dir / "detection" / "detector.ckpt")},
+    )
+    monkeypatch.setattr(
+        pipeline_module.stages,
+        "evaluate",
+        lambda **kwargs: {"status": "completed", "artifact_path": str(config.logs_dir / "evaluation_report.json")},
+    )
+    monkeypatch.setattr(
+        pipeline_module.stages,
+        "export",
+        lambda **kwargs: {"status": "completed", "artifact_path": str(config.logs_dir / "model_export.tar.gz")},
+    )
+
+    report = run_training_pipeline(config=config, processed_csv=processed_csv, image_root=image_root, dry_run=False)
+    baseline_vs_best = json.loads(report["artifacts"]["baseline_comparison_path"].read_text(encoding="utf-8"))
+    assert baseline_vs_best["baseline"] == {"cer": 0.5, "wer": 0.6}
+    assert baseline_vs_best["best"]["cer"] != baseline_vs_best["baseline"]["cer"]
+    assert baseline_vs_best["delta"]["cer"] == pytest.approx(
+        baseline_vs_best["baseline"]["cer"] - baseline_vs_best["best"]["cer"]
+    )
+
+
+def test_run_training_pipeline_execute_mode_accepts_user_provided_baseline_metrics_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import src.training.pipeline as pipeline_module
+
+    config = TrainingConfig(
+        data_dir=tmp_path / "data" / "processed" / "training",
+        logs_dir=tmp_path / "logs" / "training",
+    )
+    processed_csv = config.data_dir / "merged.csv"
+    image_root = tmp_path / "data" / "images"
+    _create_valid_dataset(processed_csv, image_root)
+    baseline_metrics_path = tmp_path / "custom" / "baseline_metrics.json"
+    baseline_metrics_path.parent.mkdir(parents=True, exist_ok=True)
+    baseline_metrics_path.write_text(json.dumps({"cer": 0.8, "wer": 0.9}), encoding="utf-8")
+
+    def _fake_teacher(*args, **kwargs):
+        pseudo_candidates = config.data_dir / "pseudo_candidates.csv"
+        pseudo_candidates.parent.mkdir(parents=True, exist_ok=True)
+        pseudo_candidates.write_text("image_path,prediction_text,confidence,language\n", encoding="utf-8")
+        return {"status": "completed", "artifact_path": str(pseudo_candidates)}
+
+    def _fake_stage_a(*args, **kwargs):
+        _write_execute_metrics_artifacts(config)
+        return {"status": "completed", "artifact_path": str(config.logs_dir / "recognition" / "recognizer.ckpt")}
+
+    monkeypatch.setattr(pipeline_module.stages, "teacher_pass_generate_pseudo_labels", _fake_teacher)
+    monkeypatch.setattr(pipeline_module.stages, "stage_a_train_recognizer", _fake_stage_a)
+    monkeypatch.setattr(
+        pipeline_module.stages,
+        "stage_b_train_detector",
+        lambda **kwargs: {"status": "completed", "artifact_path": str(config.logs_dir / "detection" / "detector.ckpt")},
+    )
+    monkeypatch.setattr(
+        pipeline_module.stages,
+        "evaluate",
+        lambda **kwargs: {"status": "completed", "artifact_path": str(config.logs_dir / "evaluation_report.json")},
+    )
+    monkeypatch.setattr(
+        pipeline_module.stages,
+        "export",
+        lambda **kwargs: {"status": "completed", "artifact_path": str(config.logs_dir / "model_export.tar.gz")},
+    )
+
+    report = run_training_pipeline(
+        config=config,
+        processed_csv=processed_csv,
+        image_root=image_root,
+        dry_run=False,
+        baseline_metrics_path=baseline_metrics_path,
+    )
+    baseline_vs_best = json.loads(report["artifacts"]["baseline_comparison_path"].read_text(encoding="utf-8"))
+    assert baseline_vs_best["baseline"] == {"cer": 0.8, "wer": 0.9}
+
+
+def test_run_training_pipeline_execute_mode_errors_when_baseline_metrics_artifact_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import src.training.pipeline as pipeline_module
+
+    config = TrainingConfig(
+        data_dir=tmp_path / "data" / "processed" / "training",
+        logs_dir=tmp_path / "logs" / "training",
+    )
+    processed_csv = config.data_dir / "merged.csv"
+    image_root = tmp_path / "data" / "images"
+    _create_valid_dataset(processed_csv, image_root)
+
+    def _fake_teacher(*args, **kwargs):
+        pseudo_candidates = config.data_dir / "pseudo_candidates.csv"
+        pseudo_candidates.parent.mkdir(parents=True, exist_ok=True)
+        pseudo_candidates.write_text("image_path,prediction_text,confidence,language\n", encoding="utf-8")
+        return {"status": "completed", "artifact_path": str(pseudo_candidates)}
+
+    def _fake_stage_a(*args, **kwargs):
+        _write_execute_metrics_artifacts(config)
+        (config.logs_dir / "baseline_metrics.json").unlink(missing_ok=True)
+        return {"status": "completed", "artifact_path": str(config.logs_dir / "recognition" / "recognizer.ckpt")}
+
+    monkeypatch.setattr(pipeline_module.stages, "teacher_pass_generate_pseudo_labels", _fake_teacher)
+    monkeypatch.setattr(pipeline_module.stages, "stage_a_train_recognizer", _fake_stage_a)
+    monkeypatch.setattr(
+        pipeline_module.stages,
+        "stage_b_train_detector",
+        lambda **kwargs: {"status": "completed", "artifact_path": str(config.logs_dir / "detection" / "detector.ckpt")},
+    )
+    monkeypatch.setattr(
+        pipeline_module.stages,
+        "evaluate",
+        lambda **kwargs: {"status": "completed", "artifact_path": str(config.logs_dir / "evaluation_report.json")},
+    )
+    monkeypatch.setattr(
+        pipeline_module.stages,
+        "export",
+        lambda **kwargs: {"status": "completed", "artifact_path": str(config.logs_dir / "model_export.tar.gz")},
+    )
+
+    with pytest.raises(FileNotFoundError, match="baseline_metrics.json"):
+        run_training_pipeline(config=config, processed_csv=processed_csv, image_root=image_root, dry_run=False)

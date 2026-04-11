@@ -62,27 +62,68 @@ def _resolve_git_sha() -> str:
 
 def _build_metrics_payload(
     *,
-    manifest_val_csv: Path,
+    recognition_predictions_csv: Path,
+    detection_metrics_json: Path,
+    baseline_metrics_json: Path,
+    execute: bool,
 ) -> dict[str, object]:
-    val_df = pd.read_csv(manifest_val_csv)
-    recognition_samples = [
-        {
-            "language": str(row["language"]),
-            "reference_text": str(row["label_text"]),
-            "predicted_text": str(row["label_text"]),
+    if execute:
+        missing_paths = [
+            str(path)
+            for path in (recognition_predictions_csv, detection_metrics_json, baseline_metrics_json)
+            if not path.is_file()
+        ]
+        if missing_paths:
+            raise FileNotFoundError(f"required metrics artifact(s) missing: {', '.join(missing_paths)}")
+    elif not (
+        recognition_predictions_csv.is_file()
+        and detection_metrics_json.is_file()
+        and baseline_metrics_json.is_file()
+    ):
+        return {
+            "recognition": {
+                "overall": {"cer": 0.0, "wer": 0.0},
+                "per_language": {},
+            },
+            "detection": {
+                "precision": 0.0,
+                "recall": 0.0,
+                "f1": 0.0,
+            },
+            "baseline_vs_best": {
+                "baseline": {},
+                "best": {},
+                "delta": {},
+            },
+            "dry_run_status": "skipped_dry_run",
         }
-        for _, row in val_df.iterrows()
-    ]
+
+    recognition_df = pd.read_csv(recognition_predictions_csv)
+    recognition_samples = []
+    for _, row in recognition_df.iterrows():
+        recognition_samples.append(
+            {
+                "language": str(row["language"]),
+                "reference_text": str(row["reference_text"]),
+                "predicted_text": str(row["predicted_text"]),
+            }
+        )
     recognition_metrics = compute_cer_wer_metrics(recognition_samples)
-    detection_metrics = compute_detection_metrics(
-        true_positives=max(1, len(val_df)),
-        false_positives=0,
-        false_negatives=0,
-    )
-    baseline_metrics = {
-        "cer": recognition_metrics["overall"]["cer"] + 0.1,
-        "wer": recognition_metrics["overall"]["wer"] + 0.1,
-    }
+    detection_payload = json.loads(detection_metrics_json.read_text(encoding="utf-8"))
+    if {"precision", "recall", "f1"}.issubset(detection_payload):
+        detection_metrics = {
+            "precision": float(detection_payload["precision"]),
+            "recall": float(detection_payload["recall"]),
+            "f1": float(detection_payload["f1"]),
+        }
+    else:
+        detection_metrics = compute_detection_metrics(
+            true_positives=int(detection_payload["true_positives"]),
+            false_positives=int(detection_payload["false_positives"]),
+            false_negatives=int(detection_payload["false_negatives"]),
+        )
+    baseline_payload = json.loads(baseline_metrics_json.read_text(encoding="utf-8"))
+    baseline_metrics = {"cer": float(baseline_payload["cer"]), "wer": float(baseline_payload["wer"])}
     best_metrics = {
         "cer": recognition_metrics["overall"]["cer"],
         "wer": recognition_metrics["overall"]["wer"],
@@ -144,6 +185,7 @@ def run_training_pipeline(
     image_root: Path,
     dry_run: bool = False,
     pseudo_ratio_stats_by_language: Mapping[str, Mapping[str, int | float]] | None = None,
+    baseline_metrics_path: Path | None = None,
 ) -> PipelineReport:
     steps: list[PipelineStep] = []
     artifacts = ensure_training_dirs(logs_dir=config.logs_dir, data_dir=config.data_dir)
@@ -168,6 +210,8 @@ def run_training_pipeline(
         execute=execute,
     )
     steps.append({"name": "teacher_pass_generate_pseudo_labels", "status": teacher_pass_result["status"]})
+    if execute and not pseudo_candidates_csv.is_file():
+        raise FileNotFoundError(f"required artifact missing after teacher pass: {pseudo_candidates_csv}")
 
     if pseudo_candidates_csv.is_file():
         pseudo_candidates_df = pd.read_csv(pseudo_candidates_csv)
@@ -213,7 +257,15 @@ def run_training_pipeline(
 
     evaluation_report_path = config.logs_dir / "evaluation_report.json"
     baseline_comparison_path = config.logs_dir / "baseline_vs_best.json"
-    metrics_payload = _build_metrics_payload(manifest_val_csv=manifest_paths["val"])
+    recognition_predictions_csv = artifacts["recognition_run_dir"] / "val_predictions.csv"
+    detection_metrics_json = artifacts["detection_run_dir"] / "metrics.json"
+    resolved_baseline_metrics_path = baseline_metrics_path or (config.logs_dir / "baseline_metrics.json")
+    metrics_payload = _build_metrics_payload(
+        recognition_predictions_csv=recognition_predictions_csv,
+        detection_metrics_json=detection_metrics_json,
+        baseline_metrics_json=resolved_baseline_metrics_path,
+        execute=execute,
+    )
     evaluate_result = stages.evaluate(
         evaluation_report_path=evaluation_report_path,
         metrics_payload=metrics_payload,
