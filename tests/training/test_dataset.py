@@ -407,6 +407,50 @@ def test_validate_training_dataset_catches_invalid_language(tmp_path: Path):
     assert any("invalid language" in error for error in report["errors"])
 
 
+@pytest.mark.parametrize(
+    ("field", "field_value"),
+    [
+        ("label_text", ""),
+        ("label_text", "   "),
+        ("language", ""),
+        ("language", "   "),
+        ("source_kind", ""),
+        ("source_kind", "   "),
+        ("image_path", ""),
+        ("image_path", "   "),
+    ],
+)
+def test_validate_training_dataset_rejects_blank_required_fields(
+    tmp_path: Path,
+    field: str,
+    field_value: str,
+):
+    config = TrainingConfig(logs_dir=tmp_path / "logs" / "training", languages=("pt", "en"))
+    processed_csv = tmp_path / "data" / "processed" / "training" / "merged.csv"
+    image_root = tmp_path / "data" / "images"
+    image_root.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (300, 300), color=(255, 255, 255)).save(image_root / "img.png")
+
+    row = {
+        "image_path": "img.png",
+        "label_text": "abc",
+        "language": "pt",
+        "source_kind": "human",
+    }
+    row[field] = field_value
+    _write_dataset_csv(
+        processed_csv,
+        [
+            f"{row['image_path']},{row['label_text']},{row['language']},{row['source_kind']}\n",
+        ],
+    )
+
+    report, _ = validate_training_dataset(config=config, processed_csv=processed_csv, image_root=image_root)
+
+    assert report["status"] == "failed"
+    assert any(f"required field '{field}' must be non-empty" in error for error in report["errors"])
+
+
 def test_validate_training_dataset_success_writes_report(tmp_path: Path):
     config = TrainingConfig(logs_dir=tmp_path / "logs" / "training", languages=("pt", "en"))
     processed_csv = tmp_path / "data" / "processed" / "training" / "merged.csv"

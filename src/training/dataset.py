@@ -59,6 +59,7 @@ def validate_training_dataset(
     warnings: list[str] = []
     validated_rows: pd.DataFrame | None = None
     required_columns = ("image_path", "label_text", "language", "source_kind")
+    required_text_fields = required_columns
 
     if not processed_csv.is_file():
         errors.append(f"processed csv not found: {processed_csv}")
@@ -71,6 +72,16 @@ def validate_training_dataset(
             errors.append("processed dataset is empty")
         else:
             for idx, row in validated_rows.iterrows():
+                has_blank_required_field = False
+                for field in required_text_fields:
+                    field_value = row[field]
+                    if pd.isna(field_value) or str(field_value).strip() == "":
+                        errors.append(f"row {idx}: required field '{field}' must be non-empty")
+                        has_blank_required_field = True
+
+                if has_blank_required_field:
+                    continue
+
                 language = str(row["language"]).strip()
                 if language not in config.languages:
                     errors.append(f"row {idx}: invalid language '{language}'")

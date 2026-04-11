@@ -70,6 +70,26 @@ def test_run_training_pipeline_dry_run_fails_on_invalid_dataset(tmp_path: Path):
     assert (config.logs_dir / "dataset_validation_report.json").is_file()
 
 
+def test_run_training_pipeline_dry_run_fails_on_empty_label_text(tmp_path: Path):
+    config = TrainingConfig(
+        data_dir=tmp_path / "data" / "processed" / "training",
+        logs_dir=tmp_path / "logs" / "training",
+    )
+    processed_csv = config.data_dir / "merged.csv"
+    image_root = tmp_path / "data" / "images"
+    image_root.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (256, 256), color=(255, 255, 255)).save(image_root / "pt_0.png")
+    processed_csv.parent.mkdir(parents=True, exist_ok=True)
+    processed_csv.write_text(
+        "image_path,label_text,language,source_kind\n"
+        "pt_0.png,,pt,human\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="required field 'label_text' must be non-empty"):
+        run_training_pipeline(config=config, processed_csv=processed_csv, image_root=image_root, dry_run=True)
+
+
 def test_run_training_pipeline_dry_run_success_returns_ready_and_creates_manifests(
     tmp_path: Path,
 ):
