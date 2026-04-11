@@ -20,6 +20,10 @@ class _PseudoRatioConfig(Protocol):
     max_pseudo_ratio_per_language: float
 
 
+class _PseudoMergeConfig(_PseudoLabelFilterConfig, _PseudoRatioConfig, Protocol):
+    pass
+
+
 def _is_consistent_prediction_text(value: object) -> bool:
     if not isinstance(value, str):
         return False
@@ -89,3 +93,43 @@ def validate_pseudo_ratio_stats_by_language(
                 "pseudo-label ratio exceeds max_pseudo_ratio_per_language "
                 f"for language: {language}"
             ) from exc
+
+
+def merge_filtered_pseudo_labels(
+    *,
+    human_labels_df: pd.DataFrame,
+    pseudo_candidates_df: pd.DataFrame,
+    cfg: _PseudoMergeConfig,
+) -> pd.DataFrame:
+    if pseudo_candidates_df.empty:
+        return human_labels_df.copy()
+
+    filtered_pseudo_df = filter_pseudo_labels(pseudo_candidates_df, cfg)
+    if filtered_pseudo_df.empty:
+        return human_labels_df.copy()
+
+    selected_frames: list[pd.DataFrame] = [human_labels_df.copy()]
+    for language, pseudo_group in filtered_pseudo_df.groupby(LANGUAGE_COLUMN, sort=False):
+        human_count = int((human_labels_df[LANGUAGE_COLUMN] == language).sum())
+        ratio_limit = cfg.max_pseudo_ratio_per_language
+        if ratio_limit >= 1.0:
+            max_pseudo_count = len(pseudo_group)
+        elif human_count <= 0:
+            max_pseudo_count = 0
+        else:
+            max_pseudo_count = int((ratio_limit * human_count) / (1.0 - ratio_limit))
+
+        if max_pseudo_count <= 0:
+            continue
+
+        ranked_group = pseudo_group.sort_values(
+            by=["confidence", "image_path"],
+            ascending=[False, True],
+            kind="mergesort",
+        )
+        selected_frames.append(ranked_group.head(max_pseudo_count))
+
+    merged_df = pd.concat(selected_frames, ignore_index=True)
+    stats = compute_pseudo_ratio_stats_by_language(merged_df)
+    validate_pseudo_ratio_stats_by_language(stats, cfg)
+    return merged_df

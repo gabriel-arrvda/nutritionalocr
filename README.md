@@ -156,7 +156,13 @@ Status retornado: `dry_run_ready`.
 python3 scripts/train_ocr.py --execute --processed-csv data/processed/training/merged.csv --image-root data/images
 ```
 
-`--execute` executa o fluxo completo de orquestração de estágios (A reconhecimento, B detecção, avaliação e export) via comandos placeholder.
+Pré-requisitos de execução:
+
+- PaddleOCR/PaddlePaddle instalados no ambiente (`requirements.txt`)
+- Perfil de GPU compatível com a configuração do pipeline (CUDA ou MPS quando `gpu_profile.required=true`)
+- Dataset processado disponível em `--processed-csv`
+
+`--execute` executa o fluxo completo de orquestração de estágios (teacher-pass, Stage A reconhecimento com weighted sampling + early stopping, Stage B detecção, avaliação e export) com hooks de comando explícitos para PaddleOCR.
 Status retornado: `completed`.
 
 ### Notebook de treinamento
@@ -172,6 +178,8 @@ logs/
 └── training/
     ├── dataset_validation_report.json
     ├── evaluation_report.json
+    ├── baseline_vs_best.json
+    ├── metadata_bundle.json
     ├── model_export.tar.gz
     ├── recognition/
     └── detection/
@@ -182,6 +190,17 @@ data/
         ├── manifest_val.csv
         └── manifest_test.csv
 ```
+
+`evaluation_report.json` inclui:
+- CER/WER (overall + por idioma)
+- precisão/recall/F1 de detecção
+- bloco `baseline_vs_best`
+
+`metadata_bundle.json` inclui:
+- `dataset_hash`
+- hiperparâmetros
+- métricas consolidadas
+- `git_sha`
 
 ## Validação Final (Task 13)
 

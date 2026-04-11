@@ -110,6 +110,10 @@ def test_run_training_pipeline_dry_run_success_returns_ready_and_creates_manifes
     assert report["status"] == "dry_run_ready"
     assert [step["name"] for step in report["steps"]] == [
         "validate_dataset",
+        "gpu_profile_check",
+        "teacher_pass_generate_pseudo_labels",
+        "merge_filtered_pseudo_labels",
+        "validate_pseudo_ratio",
         "build_manifests",
         "stage_a_train_recognizer",
         "stage_b_train_detector",
@@ -120,6 +124,15 @@ def test_run_training_pipeline_dry_run_success_returns_ready_and_creates_manifes
     assert report["artifacts"]["manifest_train_csv"].is_file()
     assert report["artifacts"]["manifest_val_csv"].is_file()
     assert report["artifacts"]["manifest_test_csv"].is_file()
+    assert report["artifacts"]["evaluation_report_path"].is_file()
+    assert report["artifacts"]["baseline_comparison_path"].is_file()
+    assert report["artifacts"]["metadata_bundle_path"].is_file()
+
+    evaluation_payload = json.loads(report["artifacts"]["evaluation_report_path"].read_text(encoding="utf-8"))
+    assert "overall" in evaluation_payload["recognition"]
+    assert "per_language" in evaluation_payload["recognition"]
+    assert set(evaluation_payload["detection"]) == {"precision", "recall", "f1"}
+    assert "baseline_vs_best" in evaluation_payload
     assert report["artifacts"] == {
         "processed_csv": processed_csv,
         "image_root": image_root,
@@ -128,8 +141,11 @@ def test_run_training_pipeline_dry_run_success_returns_ready_and_creates_manifes
         "manifest_train_csv": config.data_dir / "manifest_train.csv",
         "manifest_val_csv": config.data_dir / "manifest_val.csv",
         "manifest_test_csv": config.data_dir / "manifest_test.csv",
+        "pseudo_candidates_csv": config.data_dir / "pseudo_candidates.csv",
         "evaluation_report_path": config.logs_dir / "evaluation_report.json",
+        "baseline_comparison_path": config.logs_dir / "baseline_vs_best.json",
         "export_bundle_path": config.logs_dir / "model_export.tar.gz",
+        "metadata_bundle_path": config.logs_dir / "metadata_bundle.json",
     }
 
 
@@ -165,6 +181,14 @@ def test_run_training_pipeline_execute_mode_calls_stages_and_returns_completed_s
         call_order.append("export")
         return {"status": "completed", "artifact_path": str(config.logs_dir / "model_export.tar.gz")}
 
+    def _fake_teacher(*args, **kwargs):
+        call_order.append("teacher_pass_generate_pseudo_labels")
+        pseudo_candidates = config.data_dir / "pseudo_candidates.csv"
+        pseudo_candidates.parent.mkdir(parents=True, exist_ok=True)
+        pseudo_candidates.write_text("image_path,prediction_text,confidence,language\n", encoding="utf-8")
+        return {"status": "completed", "artifact_path": str(pseudo_candidates)}
+
+    monkeypatch.setattr(pipeline_module.stages, "teacher_pass_generate_pseudo_labels", _fake_teacher)
     monkeypatch.setattr(pipeline_module.stages, "stage_a_train_recognizer", _fake_stage_a)
     monkeypatch.setattr(pipeline_module.stages, "stage_b_train_detector", _fake_stage_b)
     monkeypatch.setattr(pipeline_module.stages, "evaluate", _fake_evaluate)
@@ -173,6 +197,7 @@ def test_run_training_pipeline_execute_mode_calls_stages_and_returns_completed_s
     report = run_training_pipeline(config=config, processed_csv=processed_csv, image_root=image_root, dry_run=False)
     assert report["status"] == "completed"
     assert call_order == [
+        "teacher_pass_generate_pseudo_labels",
         "stage_a_train_recognizer",
         "stage_b_train_detector",
         "evaluate",
@@ -211,6 +236,14 @@ def test_run_training_pipeline_uses_stage_a_hard_examples_for_stage_b(
         return {"status": "completed", "artifact_path": str(detection_run_dir / "detector.ckpt")}
 
     monkeypatch.setattr(pipeline_module.stages, "stage_a_train_recognizer", _fake_stage_a)
+    monkeypatch.setattr(
+        pipeline_module.stages,
+        "teacher_pass_generate_pseudo_labels",
+        lambda **kwargs: {
+            "status": "completed",
+            "artifact_path": str(config.data_dir / "pseudo_candidates.csv"),
+        },
+    )
     monkeypatch.setattr(pipeline_module.stages, "stage_b_train_detector", _fake_stage_b)
     monkeypatch.setattr(
         pipeline_module.stages,
