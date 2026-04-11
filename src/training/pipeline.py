@@ -65,6 +65,7 @@ def _build_metrics_payload(
     recognition_predictions_csv: Path,
     detection_metrics_json: Path,
     baseline_metrics_json: Path,
+    manifest_val_csv: Path,
     execute: bool,
 ) -> dict[str, object]:
     if execute:
@@ -84,6 +85,7 @@ def _build_metrics_payload(
             "recognition": {
                 "overall": {"cer": 0.0, "wer": 0.0},
                 "per_language": {},
+                "per_source_kind": {},
             },
             "detection": {
                 "precision": 0.0,
@@ -109,6 +111,29 @@ def _build_metrics_payload(
             }
         )
     recognition_metrics = compute_cer_wer_metrics(recognition_samples)
+    if "source_kind" not in recognition_df.columns and manifest_val_csv.is_file():
+        manifest_df = pd.read_csv(manifest_val_csv)
+        if {"image_path", "language", "source_kind"}.issubset(manifest_df.columns):
+            recognition_df = recognition_df.merge(
+                manifest_df[["image_path", "language", "source_kind"]],
+                on=["image_path", "language"],
+                how="left",
+            )
+    per_source_kind: dict[str, object] = {}
+    if "source_kind" in recognition_df.columns:
+        source_df = recognition_df.dropna(subset=["source_kind"])
+        for source_kind, source_rows in source_df.groupby("source_kind"):
+            source_samples = []
+            for _, row in source_rows.iterrows():
+                source_samples.append(
+                    {
+                        "language": str(row["language"]),
+                        "reference_text": str(row["reference_text"]),
+                        "predicted_text": str(row["predicted_text"]),
+                    }
+                )
+            per_source_kind[str(source_kind)] = compute_cer_wer_metrics(source_samples)
+    recognition_metrics["per_source_kind"] = per_source_kind
     detection_payload = json.loads(detection_metrics_json.read_text(encoding="utf-8"))
     if {"precision", "recall", "f1"}.issubset(detection_payload):
         detection_metrics = {
@@ -264,6 +289,7 @@ def run_training_pipeline(
         recognition_predictions_csv=recognition_predictions_csv,
         detection_metrics_json=detection_metrics_json,
         baseline_metrics_json=resolved_baseline_metrics_path,
+        manifest_val_csv=manifest_paths["val"],
         execute=execute,
     )
     evaluate_result = stages.evaluate(
@@ -297,9 +323,46 @@ def run_training_pipeline(
     )
 
     export_bundle_path = config.logs_dir / "model_export.tar.gz"
+    training_config_path = config.logs_dir / "training_config.json"
+    training_config_path.write_text(
+        json.dumps(
+            {
+                "data_dir": str(config.data_dir),
+                "logs_dir": str(config.logs_dir),
+                "languages": list(config.languages),
+                "min_image_width": config.min_image_width,
+                "min_image_height": config.min_image_height,
+                "stage_a": {
+                    "weighted_sampling_human_weight": config.stage_a.weighted_sampling_human_weight,
+                    "weighted_sampling_pseudo_weight": config.stage_a.weighted_sampling_pseudo_weight,
+                    "early_stopping_patience": config.stage_a.early_stopping_patience,
+                    "early_stopping_metric": config.stage_a.early_stopping_metric,
+                },
+                "pseudo_label": {
+                    "confidence_threshold": config.pseudo_label.confidence_threshold,
+                    "max_pseudo_ratio_per_language": config.pseudo_label.max_pseudo_ratio_per_language,
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    recognition_checkpoint_path = Path(stage_a_result["artifact_path"])
+    detection_checkpoint_path = Path(stage_b_result["artifact_path"])
+    if not execute:
+        recognition_checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        detection_checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        recognition_checkpoint_path.write_text("skipped_dry_run", encoding="utf-8")
+        detection_checkpoint_path.write_text("skipped_dry_run", encoding="utf-8")
     export_result = stages.export(
         export_bundle_path=export_bundle_path,
-        metadata_payload={"metadata_bundle_path": str(metadata_path)},
+        recognition_checkpoint_path=recognition_checkpoint_path,
+        detection_checkpoint_path=detection_checkpoint_path,
+        metadata_bundle_path=metadata_path,
+        evaluation_report_path=evaluation_report_path,
+        baseline_comparison_path=baseline_comparison_path,
+        training_config_path=training_config_path,
     )
     steps.append({"name": "export", "status": export_result["status"]})
 

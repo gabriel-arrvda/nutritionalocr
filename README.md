@@ -144,7 +144,7 @@ After collecting data:
 ### CLI dry-run (default)
 
 ```bash
-python3 scripts/train_ocr.py --dry-run --processed-csv data/processed/training/merged.csv --image-root data/images
+python3 scripts/train_ocr.py --dry-run --processed-csv data/processed/consolidated_dataset.csv --image-root data/images
 ```
 
 No modo `--dry-run`, a pipeline valida dataset, gera manifests e simula estágios de treino/avaliação/export sem treino pesado.
@@ -153,7 +153,7 @@ Status retornado: `dry_run_ready`.
 ### CLI execução com `--execute`
 
 ```bash
-python3 scripts/train_ocr.py --execute --processed-csv data/processed/training/merged.csv --image-root data/images
+python3 scripts/train_ocr.py --execute --processed-csv data/processed/consolidated_dataset.csv --image-root data/images
 ```
 
 Pré-requisitos de execução:

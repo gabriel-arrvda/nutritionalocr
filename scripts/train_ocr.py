@@ -38,7 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--processed-csv",
         type=Path,
-        default=Path("data/processed/training/merged.csv"),
+        default=Path("data/processed/consolidated_dataset.csv"),
         help="Path to processed dataset CSV",
     )
     parser.add_argument(

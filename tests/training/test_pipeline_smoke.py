@@ -2,11 +2,12 @@ from pathlib import Path
 import json
 import subprocess
 import sys
+import tarfile
 
 import pytest
 from PIL import Image
 
-from src.training.config import TrainingConfig
+from src.training.config import PseudoLabelConfig, TrainingConfig
 from src.training.io import ensure_training_dirs
 from src.training.pipeline import run_training_pipeline
 
@@ -72,10 +73,32 @@ def _write_execute_metrics_artifacts(config: TrainingConfig) -> None:
     )
 
 
+def _write_execute_metrics_artifacts_with_sources(config: TrainingConfig) -> None:
+    recognition_predictions = config.logs_dir / "recognition" / "val_predictions.csv"
+    recognition_predictions.parent.mkdir(parents=True, exist_ok=True)
+    recognition_predictions.write_text(
+        "image_path,reference_text,predicted_text,language,source_kind\n"
+        "pt_human.png,texto humano,texto humano,pt,human_label\n"
+        "en_pseudo.png,pseudo text,pseodo text,en,pseudo_label\n",
+        encoding="utf-8",
+    )
+    detection_metrics = config.logs_dir / "detection" / "metrics.json"
+    detection_metrics.parent.mkdir(parents=True, exist_ok=True)
+    detection_metrics.write_text(
+        json.dumps({"true_positives": 8, "false_positives": 2, "false_negatives": 1}),
+        encoding="utf-8",
+    )
+    (config.logs_dir / "baseline_metrics.json").write_text(
+        json.dumps({"cer": 0.5, "wer": 0.6}),
+        encoding="utf-8",
+    )
+
+
 def test_run_training_pipeline_dry_run_fails_on_invalid_dataset(tmp_path: Path):
     config = TrainingConfig(
         data_dir=tmp_path / "data" / "processed" / "training",
         logs_dir=tmp_path / "logs" / "training",
+        pseudo_label=PseudoLabelConfig(confidence_threshold=0.8, max_pseudo_ratio_per_language=0.8),
     )
     processed_csv = config.data_dir / "merged.csv"
     image_root = tmp_path / "data" / "images"
@@ -95,6 +118,7 @@ def test_run_training_pipeline_dry_run_fails_on_empty_label_text(tmp_path: Path)
     config = TrainingConfig(
         data_dir=tmp_path / "data" / "processed" / "training",
         logs_dir=tmp_path / "logs" / "training",
+        pseudo_label=PseudoLabelConfig(confidence_threshold=0.8, max_pseudo_ratio_per_language=0.8),
     )
     processed_csv = config.data_dir / "merged.csv"
     image_root = tmp_path / "data" / "images"
@@ -601,3 +625,120 @@ def test_run_training_pipeline_execute_mode_errors_when_baseline_metrics_artifac
 
     with pytest.raises(FileNotFoundError, match="baseline_metrics.json"):
         run_training_pipeline(config=config, processed_csv=processed_csv, image_root=image_root, dry_run=False)
+
+
+def test_execute_evaluation_report_includes_per_language_and_source_segmented_metrics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import src.training.pipeline as pipeline_module
+
+    config = TrainingConfig(
+        data_dir=tmp_path / "data" / "processed" / "training",
+        logs_dir=tmp_path / "logs" / "training",
+        pseudo_label=PseudoLabelConfig(confidence_threshold=0.8, max_pseudo_ratio_per_language=0.8),
+    )
+    processed_csv = config.data_dir / "merged.csv"
+    image_root = tmp_path / "data" / "images"
+    image_root.mkdir(parents=True, exist_ok=True)
+    for image_name in ("pt_human.png", "pt_1.png", "pt_2.png", "en_human.png", "en_1.png", "en_2.png"):
+        Image.new("RGB", (256, 256), color=(255, 255, 255)).save(image_root / image_name)
+    processed_csv.parent.mkdir(parents=True, exist_ok=True)
+    processed_csv.write_text(
+        "image_path,label_text,language,source_kind\n"
+        "pt_human.png,texto humano,pt,human_label\n"
+        "pt_1.png,texto 1,pt,human_label\n"
+        "pt_2.png,texto 2,pt,human_label\n"
+        "en_human.png,human text,en,human_label\n"
+        "en_1.png,human text 1,en,human_label\n"
+        "en_2.png,human text 2,en,human_label\n",
+        encoding="utf-8",
+    )
+
+    def _fake_teacher(*args, **kwargs):
+        pseudo_candidates = config.data_dir / "pseudo_candidates.csv"
+        pseudo_candidates.parent.mkdir(parents=True, exist_ok=True)
+        pseudo_candidates.write_text(
+            "image_path,prediction_text,confidence,language\n"
+            "en_pseudo.png,pseudo text,0.95,en\n"
+            "en_pseudo_1.png,pseudo text 1,0.96,en\n"
+            "en_pseudo_2.png,pseudo text 2,0.97,en\n",
+            encoding="utf-8",
+        )
+        return {"status": "completed", "artifact_path": str(pseudo_candidates)}
+
+    def _fake_stage_a(*args, **kwargs):
+        _write_execute_metrics_artifacts_with_sources(config)
+        recognizer_ckpt = config.logs_dir / "recognition" / "recognizer.ckpt"
+        recognizer_ckpt.parent.mkdir(parents=True, exist_ok=True)
+        recognizer_ckpt.write_text("recognizer", encoding="utf-8")
+        return {"status": "completed", "artifact_path": str(recognizer_ckpt)}
+
+    def _fake_stage_b(*, manifest_train_csv: Path, detection_run_dir: Path, execute: bool):
+        detector_ckpt = detection_run_dir / "detector.ckpt"
+        detector_ckpt.parent.mkdir(parents=True, exist_ok=True)
+        detector_ckpt.write_text("detector", encoding="utf-8")
+        return {"status": "completed", "artifact_path": str(detector_ckpt)}
+
+    monkeypatch.setattr(pipeline_module.stages, "teacher_pass_generate_pseudo_labels", _fake_teacher)
+    monkeypatch.setattr(pipeline_module.stages, "stage_a_train_recognizer", _fake_stage_a)
+    monkeypatch.setattr(pipeline_module.stages, "stage_b_train_detector", _fake_stage_b)
+
+    report = run_training_pipeline(config=config, processed_csv=processed_csv, image_root=image_root, dry_run=False)
+    evaluation_payload = json.loads(report["artifacts"]["evaluation_report_path"].read_text(encoding="utf-8"))
+
+    assert set(evaluation_payload["recognition"]["per_language"]) == {"pt", "en"}
+    assert set(evaluation_payload["recognition"]["per_source_kind"]) == {"human_label", "pseudo_label"}
+    assert "per_language" in evaluation_payload["recognition"]["per_source_kind"]["human_label"]
+    assert "per_language" in evaluation_payload["recognition"]["per_source_kind"]["pseudo_label"]
+
+
+def test_execute_export_bundle_is_tar_gz_with_expected_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import src.training.pipeline as pipeline_module
+
+    config = TrainingConfig(
+        data_dir=tmp_path / "data" / "processed" / "training",
+        logs_dir=tmp_path / "logs" / "training",
+    )
+    processed_csv = config.data_dir / "merged.csv"
+    image_root = tmp_path / "data" / "images"
+    _create_valid_dataset(processed_csv, image_root)
+
+    def _fake_teacher(*args, **kwargs):
+        pseudo_candidates = config.data_dir / "pseudo_candidates.csv"
+        pseudo_candidates.parent.mkdir(parents=True, exist_ok=True)
+        pseudo_candidates.write_text("image_path,prediction_text,confidence,language\n", encoding="utf-8")
+        return {"status": "completed", "artifact_path": str(pseudo_candidates)}
+
+    def _fake_stage_a(*args, **kwargs):
+        _write_execute_metrics_artifacts(config)
+        recognizer_ckpt = config.logs_dir / "recognition" / "recognizer.ckpt"
+        recognizer_ckpt.parent.mkdir(parents=True, exist_ok=True)
+        recognizer_ckpt.write_text("recognizer", encoding="utf-8")
+        return {"status": "completed", "artifact_path": str(recognizer_ckpt)}
+
+    def _fake_stage_b(*, manifest_train_csv: Path, detection_run_dir: Path, execute: bool):
+        detector_ckpt = detection_run_dir / "detector.ckpt"
+        detector_ckpt.parent.mkdir(parents=True, exist_ok=True)
+        detector_ckpt.write_text("detector", encoding="utf-8")
+        return {"status": "completed", "artifact_path": str(detector_ckpt)}
+
+    monkeypatch.setattr(pipeline_module.stages, "teacher_pass_generate_pseudo_labels", _fake_teacher)
+    monkeypatch.setattr(pipeline_module.stages, "stage_a_train_recognizer", _fake_stage_a)
+    monkeypatch.setattr(pipeline_module.stages, "stage_b_train_detector", _fake_stage_b)
+
+    report = run_training_pipeline(config=config, processed_csv=processed_csv, image_root=image_root, dry_run=False)
+    export_bundle = report["artifacts"]["export_bundle_path"]
+    assert export_bundle.is_file()
+
+    with tarfile.open(export_bundle, "r:gz") as archive:
+        names = set(archive.getnames())
+
+    assert "recognition/recognizer.ckpt" in names
+    assert "detection/detector.ckpt" in names
+    assert "metadata/metadata_bundle.json" in names
+    assert "metrics/evaluation_report.json" in names
+    assert "metrics/baseline_vs_best.json" in names

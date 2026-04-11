@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import tarfile
 from pathlib import Path
 
 from src.training.config import GPUProfileConfig, StageAConfig
@@ -141,7 +142,34 @@ def evaluate(
     return {"status": "completed", "artifact_path": str(evaluation_report_path)}
 
 
-def export(*, export_bundle_path: Path, metadata_payload: dict[str, object]) -> dict[str, str]:
+def export(
+    *,
+    export_bundle_path: Path,
+    recognition_checkpoint_path: Path,
+    detection_checkpoint_path: Path,
+    metadata_bundle_path: Path,
+    evaluation_report_path: Path,
+    baseline_comparison_path: Path,
+    training_config_path: Path,
+) -> dict[str, str]:
+    required_paths = (
+        recognition_checkpoint_path,
+        detection_checkpoint_path,
+        metadata_bundle_path,
+        evaluation_report_path,
+        baseline_comparison_path,
+        training_config_path,
+    )
+    missing_paths = [str(path) for path in required_paths if not path.is_file()]
+    if missing_paths:
+        raise FileNotFoundError(f"required export artifact(s) missing: {', '.join(missing_paths)}")
+
     export_bundle_path.parent.mkdir(parents=True, exist_ok=True)
-    export_bundle_path.write_text(json.dumps(metadata_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    with tarfile.open(export_bundle_path, "w:gz") as archive:
+        archive.add(recognition_checkpoint_path, arcname="recognition/recognizer.ckpt")
+        archive.add(detection_checkpoint_path, arcname="detection/detector.ckpt")
+        archive.add(metadata_bundle_path, arcname="metadata/metadata_bundle.json")
+        archive.add(evaluation_report_path, arcname="metrics/evaluation_report.json")
+        archive.add(baseline_comparison_path, arcname="metrics/baseline_vs_best.json")
+        archive.add(training_config_path, arcname="config/training_config.json")
     return {"status": "completed", "artifact_path": str(export_bundle_path)}
