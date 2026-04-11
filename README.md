@@ -139,15 +139,25 @@ After collecting data:
 3. Proceed to **Phase 2: OCR Model Training**
 4. Build API backend (Phase 3)
 
-## Fase 2: OCR Training (dry-run)
+## Fase 2: OCR Training (validation-only flow)
 
-### CLI dry-run
+### CLI validation-only (default dry-run)
 
 ```bash
 python3 scripts/train_ocr.py --dry-run --processed-csv data/processed/training/merged.csv --image-root data/images
 ```
 
-O comando imprime um relatório JSON da pipeline e deve finalizar com código de saída `0`.
+O comando imprime um relatório JSON da pipeline e finaliza com código de saída `0`.
+No modo `--dry-run`, o status retornado é `validation_only_dry_run`.
+
+### CLI validation-only with `--execute`
+
+```bash
+python3 scripts/train_ocr.py --execute --processed-csv data/processed/training/merged.csv --image-root data/images
+```
+
+`--execute` roda o mesmo fluxo de validação com efeitos de escrita de artefatos de preparação e retorna `validation_only_execute`.
+Esse modo **não** executa treinamento de modelo.
 
 ### Notebook de treinamento
 
@@ -155,7 +165,7 @@ O comando imprime um relatório JSON da pipeline e deve finalizar com código de
 jupyter notebook notebooks/02_ocr_training.ipynb
 ```
 
-### Artefatos esperados no dry-run
+### Artefatos esperados no fluxo de validação
 
 ```
 logs/

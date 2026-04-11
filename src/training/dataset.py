@@ -11,6 +11,20 @@ def normalize_label_text(text: str) -> str:
     return " ".join(normalized.split())
 
 
+def build_training_manifest(validated_rows: pd.DataFrame) -> pd.DataFrame:
+    manifest_columns = ["image_path", "label_text", "language", "source_kind"]
+    missing_columns = [column for column in manifest_columns if column not in validated_rows.columns]
+    if missing_columns:
+        raise ValueError(f"missing required columns: {', '.join(missing_columns)}")
+
+    manifest = validated_rows.loc[:, manifest_columns].copy()
+    manifest = manifest.sort_values(
+        by=["language", "source_kind", "image_path", "label_text"],
+        kind="mergesort",
+    )
+    return manifest.reset_index(drop=True)
+
+
 def stratified_split(
     df: pd.DataFrame,
     val_ratio: float = 0.2,

@@ -130,7 +130,7 @@ def run_training_pipeline(
     validate_pseudo_ratio_stats_by_language(stats_by_language, config.pseudo_label)
 
     return {
-        "status": "validated" if dry_run else "ready_for_training",
+        "status": "validation_only_dry_run" if dry_run else "validation_only_execute",
         "stages": ["recognition", "detection"],
         "artifacts": {
             "processed_csv": processed_csv,

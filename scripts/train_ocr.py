@@ -33,7 +33,7 @@ def parse_args() -> argparse.Namespace:
     mode_group.add_argument(
         "--execute",
         action="store_true",
-        help="Run executable pre-training validation flow",
+        help="Run executable validation-only flow (does not start model training)",
     )
     parser.add_argument(
         "--processed-csv",

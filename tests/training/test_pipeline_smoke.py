@@ -19,7 +19,7 @@ def test_ensure_training_dirs_creates_expected_directories(tmp_path: Path):
     assert data_dir.is_dir()
 
 
-def test_run_training_pipeline_returns_dry_run_report(tmp_path: Path):
+def test_run_training_pipeline_returns_validation_only_dry_run_report(tmp_path: Path):
     config = TrainingConfig(
         data_dir=tmp_path / "data" / "processed" / "training",
         logs_dir=tmp_path / "logs" / "training",
@@ -38,7 +38,7 @@ def test_run_training_pipeline_returns_dry_run_report(tmp_path: Path):
     assert config.data_dir.is_dir()
     assert (config.logs_dir / "recognition").is_dir()
     assert (config.logs_dir / "detection").is_dir()
-    assert report["status"] == "validated"
+    assert report["status"] == "validation_only_dry_run"
     assert report["stages"] == ["recognition", "detection"]
     assert (config.logs_dir / "dataset_validation_report.json").is_file()
     assert report["artifacts"] == {
@@ -49,7 +49,7 @@ def test_run_training_pipeline_returns_dry_run_report(tmp_path: Path):
     }
 
 
-def test_run_training_pipeline_non_dry_returns_structured_status(tmp_path: Path):
+def test_run_training_pipeline_execute_mode_still_returns_validation_status(tmp_path: Path):
     config = TrainingConfig(
         data_dir=tmp_path / "data" / "processed" / "training",
         logs_dir=tmp_path / "logs" / "training",
@@ -59,7 +59,7 @@ def test_run_training_pipeline_non_dry_returns_structured_status(tmp_path: Path)
     processed_csv.parent.mkdir(parents=True, exist_ok=True)
     image_root.mkdir(parents=True, exist_ok=True)
     processed_csv.write_text(
-        "language,source_kind\npt,human\nen,human\nen,pseudo_label\n",
+        "language,source_kind\npt,human\nen,human\nen,human\nen,pseudo_label\n",
         encoding="utf-8",
     )
 
@@ -69,7 +69,7 @@ def test_run_training_pipeline_non_dry_returns_structured_status(tmp_path: Path)
         image_root=image_root,
         dry_run=False,
     )
-    assert report["status"] == "ready_for_training"
+    assert report["status"] == "validation_only_execute"
     assert (config.logs_dir / "dataset_validation_report.json").is_file()
 
 
@@ -101,7 +101,7 @@ def test_run_training_pipeline_enforces_pseudo_ratio_caps(tmp_path: Path):
 
     with pytest.raises(
         ValueError,
-        match="pseudo-label ratio exceeds max_pseudo_ratio_per_language for language: en",
+        match="pseudo-label ratio exceeds max_pseudo_ratio_per_language for language: pt",
     ):
         run_training_pipeline(
             config=config,
@@ -137,7 +137,7 @@ def test_train_ocr_cli_dry_run_prints_json_report(tmp_path: Path):
 
     assert result.returncode == 0
     payload = json.loads(result.stdout)
-    assert payload["status"] == "validated"
+    assert payload["status"] == "validation_only_dry_run"
     assert payload["stages"] == ["recognition", "detection"]
     assert payload["artifacts"]["processed_csv"] == str(processed_csv)
     assert payload["artifacts"]["image_root"] == str(image_root)
@@ -155,4 +155,36 @@ def test_train_ocr_cli_defaults_to_dry_run_and_succeeds(tmp_path: Path):
 
     assert result.returncode == 0
     payload = json.loads(result.stdout)
-    assert payload["status"] == "validated"
+    assert payload["status"] == "validation_only_dry_run"
+
+
+def test_train_ocr_cli_execute_mode_still_reports_validation_only_status(tmp_path: Path):
+    repo_root = Path(__file__).resolve().parents[2]
+    processed_csv = tmp_path / "data" / "processed" / "training" / "merged.csv"
+    image_root = tmp_path / "data" / "images"
+    processed_csv.parent.mkdir(parents=True, exist_ok=True)
+    image_root.mkdir(parents=True, exist_ok=True)
+    processed_csv.write_text(
+        "language,source_kind\npt,human\nen,human\nen,human\nen,pseudo_label\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(repo_root / "scripts" / "train_ocr.py"),
+            "--execute",
+            "--processed-csv",
+            str(processed_csv),
+            "--image-root",
+            str(image_root),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=repo_root,
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "validation_only_execute"

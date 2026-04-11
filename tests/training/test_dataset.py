@@ -5,7 +5,11 @@ import pandas as pd
 import pytest
 
 from src.training.config import PseudoLabelConfig, TrainingConfig
-from src.training.dataset import normalize_label_text, stratified_split
+from src.training.dataset import (
+    build_training_manifest,
+    normalize_label_text,
+    stratified_split,
+)
 
 
 def _build_dataframe(stratum_sizes: dict[tuple[str, str], int]) -> pd.DataFrame:
@@ -34,7 +38,7 @@ def test_training_config_defaults():
     assert config.min_image_height == 200
     assert isinstance(config.pseudo_label, PseudoLabelConfig)
     assert config.pseudo_label.confidence_threshold == 0.8
-    assert config.pseudo_label.max_pseudo_ratio_per_language == 0.7
+    assert config.pseudo_label.max_pseudo_ratio_per_language == 0.4
 
 
 @pytest.mark.parametrize("value", [-0.1, 1.1])
@@ -282,3 +286,57 @@ def test_stratified_split_rejects_small_strata_when_representation_is_impossible
         match="cannot preserve stratified representation for stratum",
     ):
         stratified_split(df, val_ratio=0.2, test_ratio=0.2, seed=42)
+
+
+def test_build_training_manifest_returns_expected_columns_and_order():
+    validated_rows = pd.DataFrame(
+        [
+            {
+                "image_path": "images/b.png",
+                "label_text": "Biscoito",
+                "language": "pt",
+                "source_kind": "manual",
+            },
+            {
+                "image_path": "images/a.png",
+                "label_text": "Apple",
+                "language": "en",
+                "source_kind": "pseudo",
+            },
+            {
+                "image_path": "images/c.png",
+                "label_text": "Arroz",
+                "language": "pt",
+                "source_kind": "manual",
+            },
+        ]
+    )
+
+    manifest = build_training_manifest(validated_rows)
+
+    assert list(manifest.columns) == [
+        "image_path",
+        "label_text",
+        "language",
+        "source_kind",
+    ]
+    assert manifest.to_dict("records") == [
+        {
+            "image_path": "images/a.png",
+            "label_text": "Apple",
+            "language": "en",
+            "source_kind": "pseudo",
+        },
+        {
+            "image_path": "images/b.png",
+            "label_text": "Biscoito",
+            "language": "pt",
+            "source_kind": "manual",
+        },
+        {
+            "image_path": "images/c.png",
+            "label_text": "Arroz",
+            "language": "pt",
+            "source_kind": "manual",
+        },
+    ]

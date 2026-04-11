@@ -5,7 +5,7 @@ from pathlib import Path
 @dataclass(frozen=True)
 class PseudoLabelConfig:
     confidence_threshold: float = 0.8
-    max_pseudo_ratio_per_language: float = 0.7
+    max_pseudo_ratio_per_language: float = 0.4
 
     def __post_init__(self) -> None:
         if not 0 <= self.confidence_threshold <= 1:
