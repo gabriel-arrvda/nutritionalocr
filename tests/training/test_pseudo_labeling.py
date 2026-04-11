@@ -14,6 +14,44 @@ def test_filter_pseudo_labels_requires_confidence_column():
         filter_pseudo_labels(df, cfg)
 
 
+def test_filter_pseudo_labels_requires_prediction_text_column():
+    df = pd.DataFrame([{"confidence": 0.9}])
+    cfg = SimpleNamespace(confidence_threshold=0.8)
+
+    with pytest.raises(ValueError, match="missing required columns: prediction_text"):
+        filter_pseudo_labels(df, cfg)
+
+
+def test_filter_pseudo_labels_rejects_blank_or_empty_predictions():
+    df = pd.DataFrame(
+        [
+            {"prediction_text": "", "confidence": 0.95},
+            {"prediction_text": "   ", "confidence": 0.95},
+            {"prediction_text": "ok", "confidence": 0.95},
+        ]
+    )
+    cfg = SimpleNamespace(confidence_threshold=0.8)
+
+    filtered = filter_pseudo_labels(df, cfg)
+
+    assert list(filtered["label_text"]) == ["ok"]
+
+
+def test_filter_pseudo_labels_rejects_inconsistent_predictions():
+    df = pd.DataFrame(
+        [
+            {"prediction_text": 123, "confidence": 0.95},
+            {"prediction_text": "linha\nquebrada", "confidence": 0.95},
+            {"prediction_text": "valido", "confidence": 0.95},
+        ]
+    )
+    cfg = SimpleNamespace(confidence_threshold=0.8)
+
+    filtered = filter_pseudo_labels(df, cfg)
+
+    assert list(filtered["label_text"]) == ["valido"]
+
+
 def test_filter_pseudo_labels_filters_by_threshold_and_sets_required_columns():
     df = pd.DataFrame(
         [
