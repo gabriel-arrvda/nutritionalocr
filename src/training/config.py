@@ -15,11 +15,20 @@ class PseudoLabelConfig:
 class TrainingConfig:
     data_dir: Path = Path("data/processed/training")
     logs_dir: Path = Path("logs/training")
-    languages: list[str] = field(default_factory=lambda: ["pt", "en", "es", "fr", "de"])
+    languages: tuple[str, ...] = ("pt", "en", "es", "fr", "de")
     min_image_width: int = 200
     min_image_height: int = 200
     pseudo_label: PseudoLabelConfig = field(default_factory=PseudoLabelConfig)
 
     def __post_init__(self) -> None:
+        normalized_languages = tuple(self.languages)
+        object.__setattr__(self, "languages", normalized_languages)
+
+        if not normalized_languages:
+            raise ValueError("languages must not be empty")
+
+        if any(not isinstance(language, str) or not language.strip() for language in normalized_languages):
+            raise ValueError("languages must contain only non-blank strings")
+
         if self.min_image_width <= 0 or self.min_image_height <= 0:
             raise ValueError("min_image_width and min_image_height must be greater than 0")
