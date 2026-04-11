@@ -34,17 +34,68 @@ def stratified_split(
     if df.empty:
         raise ValueError("input dataframe cannot be empty")
 
+    strat_columns = list(required_columns)
+    null_mask = df[strat_columns].isna().any(axis=1)
+    blank_mask = (
+        df[strat_columns]
+        .astype(str)
+        .apply(lambda column: column.str.strip().eq(""))
+        .any(axis=1)
+    )
+    if (null_mask | blank_mask).any():
+        raise ValueError("language and source_kind must contain only non-blank values")
+
+    train_ratio = 1 - val_ratio - test_ratio
+    split_ratios = {
+        "train": train_ratio,
+        "val": val_ratio,
+        "test": test_ratio,
+    }
+    split_order = ("train", "val", "test")
+    active_splits = [split for split in split_order if split_ratios[split] > 0]
+
     rng = np.random.default_rng(seed)
     train_indices: list[int] = []
     val_indices: list[int] = []
     test_indices: list[int] = []
 
-    for _, group in df.groupby(["language", "source_kind"], sort=False):
+    for (language, source_kind), group in df.groupby(["language", "source_kind"], sort=False):
         indices = group.index.to_numpy()
         shuffled = rng.permutation(indices)
+        group_size = len(shuffled)
 
-        test_size = int(len(shuffled) * test_ratio)
-        val_size = int(len(shuffled) * val_ratio)
+        minimum_required = len(active_splits)
+        if group_size < minimum_required:
+            raise ValueError(
+                "cannot preserve stratified representation for stratum "
+                f"({language}, {source_kind}) with {group_size} rows; "
+                f"need at least {minimum_required} rows for ratios "
+                f"train={train_ratio}, val={val_ratio}, test={test_ratio}"
+            )
+
+        split_sizes = {"train": 0, "val": 0, "test": 0}
+        for split in active_splits:
+            split_sizes[split] = 1
+
+        remaining = group_size - minimum_required
+        targets = {
+            split: group_size * split_ratios[split]
+            for split in active_splits
+        }
+
+        while remaining > 0:
+            selected_split = max(
+                active_splits,
+                key=lambda split: (
+                    targets[split] - split_sizes[split],
+                    -split_order.index(split),
+                ),
+            )
+            split_sizes[selected_split] += 1
+            remaining -= 1
+
+        test_size = split_sizes["test"]
+        val_size = split_sizes["val"]
 
         test_indices.extend(shuffled[:test_size].tolist())
         val_indices.extend(shuffled[test_size : test_size + val_size].tolist())

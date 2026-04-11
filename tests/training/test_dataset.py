@@ -1,10 +1,27 @@
 from pathlib import Path
+from typing import Optional
 
 import pandas as pd
 import pytest
 
 from src.training.config import PseudoLabelConfig, TrainingConfig
 from src.training.dataset import normalize_label_text, stratified_split
+
+
+def _build_dataframe(stratum_sizes: dict[tuple[str, str], int]) -> pd.DataFrame:
+    rows: list[dict[str, str | int]] = []
+    idx = 0
+    for (language, source_kind), size in stratum_sizes.items():
+        for _ in range(size):
+            rows.append(
+                {
+                    "id": idx,
+                    "language": language,
+                    "source_kind": source_kind,
+                }
+            )
+            idx += 1
+    return pd.DataFrame(rows)
 
 
 def test_training_config_defaults():
@@ -62,26 +79,74 @@ def test_normalize_label_text_applies_nfc_and_collapses_whitespace():
 
 
 def test_stratified_split_preserves_languages_in_all_splits():
-    rows: list[dict[str, str | int]] = []
-    idx = 0
-    for language in ("pt", "en", "es"):
-        for source_kind in ("manual", "pseudo"):
-            for _ in range(10):
-                rows.append(
-                    {
-                        "id": idx,
-                        "language": language,
-                        "source_kind": source_kind,
-                    }
-                )
-                idx += 1
-    df = pd.DataFrame(rows)
+    df = _build_dataframe(
+        {
+            ("pt", "manual"): 10,
+            ("pt", "pseudo"): 10,
+            ("en", "manual"): 10,
+            ("en", "pseudo"): 10,
+            ("es", "manual"): 10,
+            ("es", "pseudo"): 10,
+        }
+    )
 
     splits = stratified_split(df, val_ratio=0.2, test_ratio=0.2, seed=42)
 
     expected_languages = {"pt", "en", "es"}
     for split_name in ("train", "val", "test"):
         assert set(splits[split_name]["language"]) == expected_languages
+
+
+def test_stratified_split_has_no_overlap_and_full_row_coverage():
+    df = _build_dataframe(
+        {
+            ("pt", "manual"): 12,
+            ("pt", "pseudo"): 12,
+            ("en", "manual"): 12,
+            ("en", "pseudo"): 12,
+        }
+    )
+
+    splits = stratified_split(df, val_ratio=0.25, test_ratio=0.25, seed=42)
+
+    train_ids = set(splits["train"]["id"])
+    val_ids = set(splits["val"]["id"])
+    test_ids = set(splits["test"]["id"])
+    original_ids = set(df["id"])
+
+    assert train_ids.isdisjoint(val_ids)
+    assert train_ids.isdisjoint(test_ids)
+    assert val_ids.isdisjoint(test_ids)
+    assert train_ids | val_ids | test_ids == original_ids
+
+
+def test_stratified_split_preserves_source_kind_distribution_by_language():
+    df = _build_dataframe(
+        {
+            ("pt", "manual"): 10,
+            ("pt", "pseudo"): 10,
+            ("en", "manual"): 10,
+            ("en", "pseudo"): 10,
+        }
+    )
+
+    splits = stratified_split(df, val_ratio=0.2, test_ratio=0.2, seed=42)
+
+    for language in ("pt", "en"):
+        for source_kind in ("manual", "pseudo"):
+            assert len(
+                splits["train"].query(
+                    "language == @language and source_kind == @source_kind"
+                )
+            ) == 6
+            assert len(
+                splits["val"].query("language == @language and source_kind == @source_kind")
+            ) == 2
+            assert len(
+                splits["test"].query(
+                    "language == @language and source_kind == @source_kind"
+                )
+            ) == 2
 
 
 def test_stratified_split_rejects_empty_dataframe():
@@ -131,3 +196,72 @@ def test_stratified_split_rejects_missing_required_columns(
         ValueError, match=f"missing required columns: {expected_missing}"
     ):
         stratified_split(df)
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("language", None),
+        ("language", ""),
+        ("language", " "),
+        ("source_kind", None),
+        ("source_kind", ""),
+        ("source_kind", " "),
+    ],
+)
+def test_stratified_split_rejects_null_or_blank_stratification_values(
+    column: str, value: Optional[str]
+):
+    df = _build_dataframe(
+        {
+            ("pt", "manual"): 4,
+            ("en", "pseudo"): 4,
+        }
+    )
+    df.loc[0, column] = value
+
+    with pytest.raises(
+        ValueError, match="language and source_kind must contain only non-blank values"
+    ):
+        stratified_split(df, val_ratio=0.2, test_ratio=0.2)
+
+
+def test_stratified_split_ensures_small_strata_representation_when_feasible():
+    df = _build_dataframe(
+        {
+            ("pt", "manual"): 3,
+            ("en", "pseudo"): 3,
+        }
+    )
+
+    splits = stratified_split(df, val_ratio=0.2, test_ratio=0.2, seed=42)
+
+    for language, source_kind in (("pt", "manual"), ("en", "pseudo")):
+        assert len(
+            splits["train"].query(
+                "language == @language and source_kind == @source_kind"
+            )
+        ) == 1
+        assert len(
+            splits["val"].query("language == @language and source_kind == @source_kind")
+        ) == 1
+        assert len(
+            splits["test"].query(
+                "language == @language and source_kind == @source_kind"
+            )
+        ) == 1
+
+
+def test_stratified_split_rejects_small_strata_when_representation_is_impossible():
+    df = _build_dataframe(
+        {
+            ("pt", "manual"): 2,
+            ("en", "pseudo"): 2,
+        }
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="cannot preserve stratified representation for stratum",
+    ):
+        stratified_split(df, val_ratio=0.2, test_ratio=0.2, seed=42)
