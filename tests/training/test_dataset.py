@@ -504,6 +504,30 @@ def test_validate_training_dataset_rejects_invalid_source_kind(tmp_path: Path):
     assert any("invalid source_kind" in error for error in report["errors"])
 
 
+@pytest.mark.parametrize(
+    "label_text",
+    [
+        "texto\x01invalido",
+        "texto\uFFFDinvalido",
+    ],
+)
+def test_validate_training_dataset_fails_fast_on_charset_anomalies(
+    tmp_path: Path,
+    label_text: str,
+):
+    config = TrainingConfig(logs_dir=tmp_path / "logs" / "training", languages=("pt", "en"))
+    processed_csv = tmp_path / "data" / "processed" / "training" / "merged.csv"
+    image_root = tmp_path / "data" / "images"
+    image_root.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (300, 300), color=(255, 255, 255)).save(image_root / "img.png")
+    _write_dataset_csv(processed_csv, [f"img.png,{label_text},pt,human_label\n"])
+
+    report, _ = validate_training_dataset(config=config, processed_csv=processed_csv, image_root=image_root)
+
+    assert report["status"] == "failed"
+    assert any("charset anomaly" in error for error in report["errors"])
+
+
 def test_validate_training_dataset_blocks_severe_language_imbalance_with_rebalancing_guidance(tmp_path: Path):
     config = TrainingConfig(logs_dir=tmp_path / "logs" / "training", languages=("pt", "en", "es"))
     processed_csv = tmp_path / "data" / "processed" / "training" / "merged.csv"

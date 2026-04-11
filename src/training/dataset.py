@@ -18,6 +18,18 @@ def normalize_label_text(text: str) -> str:
     return " ".join(normalized.split())
 
 
+def _detect_charset_anomaly(value: str) -> list[str]:
+    anomalies: list[str] = []
+    for char in value:
+        if char == "\ufffd":
+            anomalies.append("U+FFFD")
+            continue
+        category = unicodedata.category(char)
+        if category in {"Cc", "Cs"} and char not in ("\t", "\n", "\r"):
+            anomalies.append(f"U+{ord(char):04X}")
+    return anomalies
+
+
 def build_training_manifest(validated_rows: pd.DataFrame) -> pd.DataFrame:
     manifest_columns = ["image_path", "label_text", "language", "source_kind"]
     missing_columns = [column for column in manifest_columns if column not in validated_rows.columns]
@@ -91,6 +103,25 @@ def validate_training_dataset(
                         has_blank_required_field = True
 
                 if has_blank_required_field:
+                    continue
+
+                text_fields_to_check = {
+                    "image_path": str(row["image_path"]),
+                    "label_text": str(row["label_text"]),
+                    "language": str(row["language"]),
+                    "source_kind": str(row["source_kind"]),
+                }
+                has_charset_anomaly = False
+                for field_name, field_value in text_fields_to_check.items():
+                    anomalies = _detect_charset_anomaly(field_value)
+                    if anomalies:
+                        errors.append(
+                            "row "
+                            f"{idx}: charset anomaly in '{field_name}' "
+                            f"(codepoints: {', '.join(sorted(set(anomalies)))})"
+                        )
+                        has_charset_anomaly = True
+                if has_charset_anomaly:
                     continue
 
                 language = str(row["language"]).strip()

@@ -795,6 +795,11 @@ def test_execute_evaluation_report_includes_per_language_and_source_segmented_me
     assert set(evaluation_payload["recognition"]["per_source_kind"]) == {"human_label", "pseudo_label"}
     assert "per_language" in evaluation_payload["recognition"]["per_source_kind"]["human_label"]
     assert "per_language" in evaluation_payload["recognition"]["per_source_kind"]["pseudo_label"]
+    assert evaluation_payload["evaluation_mode"] == "execute"
+    assert "dry_run_status" not in evaluation_payload
+    assert set(evaluation_payload["baseline_vs_best"]) == {"baseline", "best", "delta"}
+    assert set(evaluation_payload["baseline_vs_best"]["baseline"]) == {"cer", "wer"}
+    assert set(evaluation_payload["baseline_vs_best"]["best"]) == {"cer", "wer"}
 
 
 def test_execute_export_bundle_is_tar_gz_with_expected_artifacts(

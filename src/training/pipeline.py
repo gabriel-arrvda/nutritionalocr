@@ -134,6 +134,7 @@ def _build_metrics_payload(
         and baseline_metrics_json.is_file()
     ):
         return {
+            "evaluation_mode": "dry_run",
             "recognition": {
                 "overall": {"cer": 0.0, "wer": 0.0},
                 "macro": {"cer": 0.0, "wer": 0.0},
@@ -207,7 +208,8 @@ def _build_metrics_payload(
         "cer": float(recognition_metrics["macro"]["cer"]),
         "wer": float(recognition_metrics["macro"]["wer"]),
     }
-    return {
+    payload: dict[str, object] = {
+        "evaluation_mode": "execute" if execute else "dry_run",
         "recognition": recognition_metrics,
         "detection": detection_metrics,
         "baseline_vs_best": {
@@ -219,6 +221,9 @@ def _build_metrics_payload(
             },
         },
     }
+    if not execute:
+        payload["dry_run_status"] = "computed_from_existing_artifacts"
+    return payload
 
 
 def _resolve_stage_a_predictions_path(stage_a_artifact_path: Path) -> Path:
