@@ -89,3 +89,45 @@ def test_stratified_split_rejects_empty_dataframe():
 
     with pytest.raises(ValueError, match="input dataframe cannot be empty"):
         stratified_split(df)
+
+
+@pytest.mark.parametrize("val_ratio", [-0.1, 1.0, 1.2])
+def test_stratified_split_rejects_invalid_val_ratio(val_ratio: float):
+    df = pd.DataFrame([{"language": "pt", "source_kind": "manual"}])
+
+    with pytest.raises(ValueError, match="val_ratio must satisfy 0 <= val_ratio < 1"):
+        stratified_split(df, val_ratio=val_ratio, test_ratio=0.2)
+
+
+@pytest.mark.parametrize("test_ratio", [-0.1, 1.0, 1.2])
+def test_stratified_split_rejects_invalid_test_ratio(test_ratio: float):
+    df = pd.DataFrame([{"language": "pt", "source_kind": "manual"}])
+
+    with pytest.raises(ValueError, match="test_ratio must satisfy 0 <= test_ratio < 1"):
+        stratified_split(df, val_ratio=0.2, test_ratio=test_ratio)
+
+
+def test_stratified_split_rejects_sum_of_ratios_greater_or_equal_to_one():
+    df = pd.DataFrame([{"language": "pt", "source_kind": "manual"}])
+
+    with pytest.raises(ValueError, match="val_ratio \\+ test_ratio must be less than 1"):
+        stratified_split(df, val_ratio=0.5, test_ratio=0.5)
+
+
+@pytest.mark.parametrize(
+    ("columns", "expected_missing"),
+    [
+        (["source_kind"], "language"),
+        (["language"], "source_kind"),
+        (["id"], "language, source_kind"),
+    ],
+)
+def test_stratified_split_rejects_missing_required_columns(
+    columns: list[str], expected_missing: str
+):
+    df = pd.DataFrame(columns=columns)
+
+    with pytest.raises(
+        ValueError, match=f"missing required columns: {expected_missing}"
+    ):
+        stratified_split(df)

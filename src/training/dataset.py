@@ -17,6 +17,20 @@ def stratified_split(
     test_ratio: float = 0.2,
     seed: int = 42,
 ) -> dict[str, pd.DataFrame]:
+    if not 0 <= val_ratio < 1:
+        raise ValueError("val_ratio must satisfy 0 <= val_ratio < 1")
+
+    if not 0 <= test_ratio < 1:
+        raise ValueError("test_ratio must satisfy 0 <= test_ratio < 1")
+
+    if val_ratio + test_ratio >= 1:
+        raise ValueError("val_ratio + test_ratio must be less than 1")
+
+    required_columns = ("language", "source_kind")
+    missing_columns = [column for column in required_columns if column not in df.columns]
+    if missing_columns:
+        raise ValueError(f"missing required columns: {', '.join(missing_columns)}")
+
     if df.empty:
         raise ValueError("input dataframe cannot be empty")
 
