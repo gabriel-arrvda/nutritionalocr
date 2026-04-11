@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from collections.abc import Mapping
 from typing import TypedDict
+
+import pandas as pd
 
 from src.training.config import TrainingConfig
 from src.training.dataset import validate_training_dataset, write_training_manifests
@@ -35,6 +38,43 @@ class PipelineReport(TypedDict):
     status: str
     steps: list[PipelineStep]
     artifacts: PipelineArtifacts
+
+
+def select_stage_b_hard_examples(
+    *,
+    manifest_train_csv: Path,
+    stage_a_artifact_path: Path,
+    output_manifest_csv: Path,
+    hard_example_ratio: float = 0.5,
+) -> Path:
+    if not 0 < hard_example_ratio <= 1:
+        raise ValueError("hard_example_ratio must satisfy 0 < hard_example_ratio <= 1")
+
+    manifest_df = pd.read_csv(manifest_train_csv)
+    if manifest_df.empty:
+        raise ValueError("manifest_train_csv cannot be empty")
+
+    stage_a_signal = (
+        stage_a_artifact_path.read_text(encoding="utf-8")
+        if stage_a_artifact_path.is_file()
+        else str(stage_a_artifact_path)
+    )
+
+    def _score_row(row: pd.Series) -> int:
+        payload = (
+            f"{stage_a_signal}|{row['image_path']}|{row['label_text']}|"
+            f"{row['language']}|{row['source_kind']}"
+        )
+        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        return int(digest[:15], 16)
+
+    scored_df = manifest_df.copy()
+    scored_df["_hard_score"] = scored_df.apply(_score_row, axis=1)
+    hard_example_count = max(1, int(len(scored_df) * hard_example_ratio))
+    hard_examples_df = scored_df.nlargest(hard_example_count, "_hard_score").drop(columns=["_hard_score"])
+    output_manifest_csv.parent.mkdir(parents=True, exist_ok=True)
+    hard_examples_df.to_csv(output_manifest_csv, index=False)
+    return output_manifest_csv
 
 
 def run_training_pipeline(
@@ -72,8 +112,14 @@ def run_training_pipeline(
     )
     steps.append({"name": "stage_a_train_recognizer", "status": stage_a_result["status"]})
 
-    stage_b_result = stages.stage_b_train_detector(
+    stage_b_manifest_csv = select_stage_b_hard_examples(
         manifest_train_csv=manifest_paths["train"],
+        stage_a_artifact_path=Path(stage_a_result["artifact_path"]),
+        output_manifest_csv=config.data_dir / "manifest_stage_b_hard_examples.csv",
+    )
+
+    stage_b_result = stages.stage_b_train_detector(
+        manifest_train_csv=stage_b_manifest_csv,
         detection_run_dir=artifacts["detection_run_dir"],
         execute=execute,
     )

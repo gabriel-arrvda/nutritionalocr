@@ -10,6 +10,8 @@ from PIL import Image, UnidentifiedImageError
 
 from src.training.config import TrainingConfig
 
+ALLOWED_SOURCE_KINDS = ("human_label", "pseudo_label")
+
 
 def normalize_label_text(text: str) -> str:
     normalized = unicodedata.normalize("NFC", text)
@@ -23,6 +25,7 @@ def build_training_manifest(validated_rows: pd.DataFrame) -> pd.DataFrame:
         raise ValueError(f"missing required columns: {', '.join(missing_columns)}")
 
     manifest = validated_rows.loc[:, manifest_columns].copy()
+    manifest["label_text"] = manifest["label_text"].map(lambda value: normalize_label_text(str(value)))
     manifest = manifest.sort_values(
         by=["language", "source_kind", "image_path", "label_text"],
         kind="mergesort",
@@ -85,6 +88,10 @@ def validate_training_dataset(
                 language = str(row["language"]).strip()
                 if language not in config.languages:
                     errors.append(f"row {idx}: invalid language '{language}'")
+
+                source_kind = str(row["source_kind"]).strip()
+                if source_kind not in ALLOWED_SOURCE_KINDS:
+                    errors.append(f"row {idx}: invalid source_kind '{source_kind}'")
 
                 image_path_value = str(row["image_path"]).strip()
                 resolved_path = Path(image_path_value)

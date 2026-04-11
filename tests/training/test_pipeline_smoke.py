@@ -27,7 +27,7 @@ def _create_dataset_row(
     image_name: str,
     label_text: str = "texto",
     language: str = "pt",
-    source_kind: str = "human",
+    source_kind: str = "human_label",
 ) -> str:
     image_root.mkdir(parents=True, exist_ok=True)
     image_path = image_root / image_name
@@ -82,7 +82,7 @@ def test_run_training_pipeline_dry_run_fails_on_empty_label_text(tmp_path: Path)
     processed_csv.parent.mkdir(parents=True, exist_ok=True)
     processed_csv.write_text(
         "image_path,label_text,language,source_kind\n"
-        "pt_0.png,,pt,human\n",
+        "pt_0.png,,pt,human_label\n",
         encoding="utf-8",
     )
 
@@ -181,6 +181,55 @@ def test_run_training_pipeline_execute_mode_calls_stages_and_returns_completed_s
     assert report["artifacts"]["evaluation_report_path"] == config.logs_dir / "evaluation_report.json"
     assert report["artifacts"]["export_bundle_path"] == config.logs_dir / "model_export.tar.gz"
     assert (config.logs_dir / "dataset_validation_report.json").is_file()
+
+
+def test_run_training_pipeline_uses_stage_a_hard_examples_for_stage_b(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import src.training.pipeline as pipeline_module
+
+    config = TrainingConfig(
+        data_dir=tmp_path / "data" / "processed" / "training",
+        logs_dir=tmp_path / "logs" / "training",
+    )
+    processed_csv = config.data_dir / "merged.csv"
+    image_root = tmp_path / "data" / "images"
+    _create_valid_dataset(processed_csv, image_root)
+
+    stage_a_artifact = config.logs_dir / "recognition" / "recognizer.ckpt"
+    captured_stage_b_manifest: Path | None = None
+
+    def _fake_stage_a(*args, **kwargs):
+        stage_a_artifact.parent.mkdir(parents=True, exist_ok=True)
+        stage_a_artifact.write_text("stage-a-output", encoding="utf-8")
+        return {"status": "completed", "artifact_path": str(stage_a_artifact)}
+
+    def _fake_stage_b(*, manifest_train_csv: Path, detection_run_dir: Path, execute: bool):
+        nonlocal captured_stage_b_manifest
+        captured_stage_b_manifest = manifest_train_csv
+        return {"status": "completed", "artifact_path": str(detection_run_dir / "detector.ckpt")}
+
+    monkeypatch.setattr(pipeline_module.stages, "stage_a_train_recognizer", _fake_stage_a)
+    monkeypatch.setattr(pipeline_module.stages, "stage_b_train_detector", _fake_stage_b)
+    monkeypatch.setattr(
+        pipeline_module.stages,
+        "evaluate",
+        lambda **kwargs: {"status": "completed", "artifact_path": str(config.logs_dir / "evaluation_report.json")},
+    )
+    monkeypatch.setattr(
+        pipeline_module.stages,
+        "export",
+        lambda **kwargs: {"status": "completed", "artifact_path": str(config.logs_dir / "model_export.tar.gz")},
+    )
+
+    report = run_training_pipeline(config=config, processed_csv=processed_csv, image_root=image_root, dry_run=False)
+
+    assert report["status"] == "completed"
+    assert captured_stage_b_manifest is not None
+    assert captured_stage_b_manifest != report["artifacts"]["manifest_train_csv"]
+    assert captured_stage_b_manifest.name == "manifest_stage_b_hard_examples.csv"
+    assert captured_stage_b_manifest.is_file()
 
 
 def test_run_training_pipeline_respects_non_default_config_directories(tmp_path: Path):

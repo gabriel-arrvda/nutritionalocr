@@ -344,6 +344,29 @@ def test_build_training_manifest_returns_expected_columns_and_order():
     ]
 
 
+def test_build_training_manifest_normalizes_label_text_before_sorting():
+    validated_rows = pd.DataFrame(
+        [
+            {
+                "image_path": "images/b.png",
+                "label_text": "Cafe\u0301   com\tleite ",
+                "language": "pt",
+                "source_kind": "human_label",
+            },
+            {
+                "image_path": "images/a.png",
+                "label_text": " Banana   prata ",
+                "language": "pt",
+                "source_kind": "human_label",
+            },
+        ]
+    )
+
+    manifest = build_training_manifest(validated_rows)
+
+    assert manifest["label_text"].tolist() == ["Banana prata", "Café com leite"]
+
+
 def _write_dataset_csv(csv_path: Path, rows: list[str]) -> None:
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     csv_path.write_text("image_path,label_text,language,source_kind\n" + "".join(rows), encoding="utf-8")
@@ -353,7 +376,7 @@ def test_validate_training_dataset_catches_missing_image(tmp_path: Path):
     config = TrainingConfig(logs_dir=tmp_path / "logs" / "training")
     processed_csv = tmp_path / "data" / "processed" / "training" / "merged.csv"
     image_root = tmp_path / "data" / "images"
-    _write_dataset_csv(processed_csv, ["missing.png,abc,pt,human\n"])
+    _write_dataset_csv(processed_csv, ["missing.png,abc,pt,human_label\n"])
 
     report, _ = validate_training_dataset(config=config, processed_csv=processed_csv, image_root=image_root)
 
@@ -367,7 +390,7 @@ def test_validate_training_dataset_catches_unreadable_image(tmp_path: Path):
     image_root = tmp_path / "data" / "images"
     image_root.mkdir(parents=True, exist_ok=True)
     (image_root / "bad.png").write_text("not an image", encoding="utf-8")
-    _write_dataset_csv(processed_csv, ["bad.png,abc,pt,human\n"])
+    _write_dataset_csv(processed_csv, ["bad.png,abc,pt,human_label\n"])
 
     report, _ = validate_training_dataset(config=config, processed_csv=processed_csv, image_root=image_root)
 
@@ -385,7 +408,7 @@ def test_validate_training_dataset_catches_small_image(tmp_path: Path):
     image_root = tmp_path / "data" / "images"
     image_root.mkdir(parents=True, exist_ok=True)
     Image.new("RGB", (200, 200), color=(255, 255, 255)).save(image_root / "small.png")
-    _write_dataset_csv(processed_csv, ["small.png,abc,pt,human\n"])
+    _write_dataset_csv(processed_csv, ["small.png,abc,pt,human_label\n"])
 
     report, _ = validate_training_dataset(config=config, processed_csv=processed_csv, image_root=image_root)
 
@@ -399,7 +422,7 @@ def test_validate_training_dataset_catches_invalid_language(tmp_path: Path):
     image_root = tmp_path / "data" / "images"
     image_root.mkdir(parents=True, exist_ok=True)
     Image.new("RGB", (300, 300), color=(255, 255, 255)).save(image_root / "img.png")
-    _write_dataset_csv(processed_csv, ["img.png,abc,es,human\n"])
+    _write_dataset_csv(processed_csv, ["img.png,abc,es,human_label\n"])
 
     report, _ = validate_training_dataset(config=config, processed_csv=processed_csv, image_root=image_root)
 
@@ -435,7 +458,7 @@ def test_validate_training_dataset_rejects_blank_required_fields(
         "image_path": "img.png",
         "label_text": "abc",
         "language": "pt",
-        "source_kind": "human",
+        "source_kind": "human_label",
     }
     row[field] = field_value
     _write_dataset_csv(
@@ -457,7 +480,7 @@ def test_validate_training_dataset_success_writes_report(tmp_path: Path):
     image_root = tmp_path / "data" / "images"
     image_root.mkdir(parents=True, exist_ok=True)
     Image.new("RGB", (300, 300), color=(255, 255, 255)).save(image_root / "img.png")
-    _write_dataset_csv(processed_csv, ["img.png,abc,pt,human\n"])
+    _write_dataset_csv(processed_csv, ["img.png,abc,pt,human_label\n"])
 
     report, _ = validate_training_dataset(config=config, processed_csv=processed_csv, image_root=image_root)
     report_path = config.logs_dir / "dataset_validation_report.json"
@@ -465,3 +488,17 @@ def test_validate_training_dataset_success_writes_report(tmp_path: Path):
     assert report["status"] == "ok"
     assert report_path == config.logs_dir / "dataset_validation_report.json"
     assert report_path.is_file()
+
+
+def test_validate_training_dataset_rejects_invalid_source_kind(tmp_path: Path):
+    config = TrainingConfig(logs_dir=tmp_path / "logs" / "training", languages=("pt", "en"))
+    processed_csv = tmp_path / "data" / "processed" / "training" / "merged.csv"
+    image_root = tmp_path / "data" / "images"
+    image_root.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (300, 300), color=(255, 255, 255)).save(image_root / "img.png")
+    _write_dataset_csv(processed_csv, ["img.png,abc,pt,manual\n"])
+
+    report, _ = validate_training_dataset(config=config, processed_csv=processed_csv, image_root=image_root)
+
+    assert report["status"] == "failed"
+    assert any("invalid source_kind" in error for error in report["errors"])
