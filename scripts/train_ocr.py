@@ -28,12 +28,12 @@ def parse_args() -> argparse.Namespace:
     mode_group.add_argument(
         "--dry-run",
         action="store_true",
-        help="Run validation-only dry-run pipeline (default)",
+        help="Run full pipeline planning with strict validation and no heavy training (default)",
     )
     mode_group.add_argument(
         "--execute",
         action="store_true",
-        help="Run executable validation-only flow (does not start model training)",
+        help="Run executable full Phase 2 orchestration flow",
     )
     parser.add_argument(
         "--processed-csv",

@@ -1,18 +1,17 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from collections.abc import Mapping
 from typing import TypedDict
 
-import pandas as pd
-
 from src.training.config import TrainingConfig
+from src.training.dataset import validate_training_dataset, write_training_manifests
 from src.training.io import ensure_training_dirs
 from src.training.pseudo_labeling import (
     compute_pseudo_ratio_stats_by_language,
     validate_pseudo_ratio_stats_by_language,
 )
+from src.training import stages
 
 
 class PipelineArtifacts(TypedDict):
@@ -20,80 +19,22 @@ class PipelineArtifacts(TypedDict):
     image_root: Path
     recognition_run_dir: Path
     detection_run_dir: Path
+    manifest_train_csv: Path
+    manifest_val_csv: Path
+    manifest_test_csv: Path
+    evaluation_report_path: Path
+    export_bundle_path: Path
 
 
-class DryRunReport(TypedDict):
+class PipelineStep(TypedDict):
+    name: str
     status: str
-    stages: list[str]
+
+
+class PipelineReport(TypedDict):
+    status: str
+    steps: list[PipelineStep]
     artifacts: PipelineArtifacts
-
-
-class DatasetValidationReport(TypedDict):
-    status: str
-    errors: list[str]
-    warnings: list[str]
-    row_count: int
-
-
-def _validate_dataset(
-    *,
-    processed_csv: Path,
-    image_root: Path,
-    fail_fast: bool,
-) -> tuple[DatasetValidationReport, pd.DataFrame | None]:
-    errors: list[str] = []
-    warnings: list[str] = []
-    dataset_df: pd.DataFrame | None = None
-
-    if not processed_csv.is_file():
-        message = f"processed csv not found: {processed_csv}"
-        if fail_fast:
-            errors.append(message)
-        else:
-            warnings.append(message)
-    else:
-        dataset_df = pd.read_csv(processed_csv)
-        required_columns = ("language", "source_kind")
-        missing_columns = [column for column in required_columns if column not in dataset_df.columns]
-        if missing_columns:
-            errors.append(f"missing required columns: {', '.join(missing_columns)}")
-        if dataset_df.empty:
-            errors.append("processed dataset is empty")
-
-    if not image_root.exists():
-        message = f"image root not found: {image_root}"
-        if fail_fast:
-            errors.append(message)
-        else:
-            warnings.append(message)
-
-    report: DatasetValidationReport = {
-        "status": "failed" if errors else "ok",
-        "errors": errors,
-        "warnings": warnings,
-        "row_count": 0 if dataset_df is None else int(len(dataset_df)),
-    }
-    return report, dataset_df
-
-
-def _write_dataset_validation_report(
-    *,
-    logs_dir: Path,
-    processed_csv: Path,
-    image_root: Path,
-    report: DatasetValidationReport,
-) -> Path:
-    report_path = logs_dir / "dataset_validation_report.json"
-    payload = {
-        "status": report["status"],
-        "errors": report["errors"],
-        "warnings": report["warnings"],
-        "row_count": report["row_count"],
-        "processed_csv": str(processed_csv),
-        "image_root": str(image_root),
-    }
-    report_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    return report_path
 
 
 def run_training_pipeline(
@@ -102,40 +43,73 @@ def run_training_pipeline(
     image_root: Path,
     dry_run: bool = False,
     pseudo_ratio_stats_by_language: Mapping[str, Mapping[str, int | float]] | None = None,
-) -> DryRunReport:
+) -> PipelineReport:
+    steps: list[PipelineStep] = []
     artifacts = ensure_training_dirs(logs_dir=config.logs_dir, data_dir=config.data_dir)
-    validation_report, dataset_df = _validate_dataset(
+    validation_report, dataset_df = validate_training_dataset(
+        config=config,
         processed_csv=processed_csv,
         image_root=image_root,
-        fail_fast=not dry_run,
     )
-    _write_dataset_validation_report(
-        logs_dir=config.logs_dir,
-        processed_csv=processed_csv,
-        image_root=image_root,
-        report=validation_report,
-    )
+    steps.append({"name": "validate_dataset", "status": "completed" if not validation_report["errors"] else "failed"})
 
-    if validation_report["errors"]:
+    if validation_report["errors"] or dataset_df is None:
         raise ValueError("; ".join(validation_report["errors"]))
 
     stats_by_language = pseudo_ratio_stats_by_language
     if stats_by_language is None:
-        stats_by_language = (
-            compute_pseudo_ratio_stats_by_language(dataset_df)
-            if dataset_df is not None
-            else {}
-        )
+        stats_by_language = compute_pseudo_ratio_stats_by_language(dataset_df)
 
     validate_pseudo_ratio_stats_by_language(stats_by_language, config.pseudo_label)
+    manifest_paths = write_training_manifests(validated_rows=dataset_df, output_dir=config.data_dir)
+    steps.append({"name": "build_manifests", "status": "completed"})
+
+    execute = not dry_run
+    stage_a_result = stages.stage_a_train_recognizer(
+        manifest_train_csv=manifest_paths["train"],
+        recognition_run_dir=artifacts["recognition_run_dir"],
+        execute=execute,
+    )
+    steps.append({"name": "stage_a_train_recognizer", "status": stage_a_result["status"]})
+
+    stage_b_result = stages.stage_b_train_detector(
+        manifest_train_csv=manifest_paths["train"],
+        detection_run_dir=artifacts["detection_run_dir"],
+        execute=execute,
+    )
+    steps.append({"name": "stage_b_train_detector", "status": stage_b_result["status"]})
+
+    evaluation_report_path = config.logs_dir / "evaluation_report.json"
+    evaluate_result = stages.evaluate(
+        manifest_val_csv=manifest_paths["val"],
+        recognition_run_dir=artifacts["recognition_run_dir"],
+        detection_run_dir=artifacts["detection_run_dir"],
+        evaluation_report_path=evaluation_report_path,
+        execute=execute,
+    )
+    steps.append({"name": "evaluate", "status": evaluate_result["status"]})
+
+    export_bundle_path = config.logs_dir / "model_export.tar.gz"
+    export_result = stages.export(
+        recognition_run_dir=artifacts["recognition_run_dir"],
+        detection_run_dir=artifacts["detection_run_dir"],
+        export_bundle_path=export_bundle_path,
+        execute=execute,
+    )
+    steps.append({"name": "export", "status": export_result["status"]})
 
     return {
-        "status": "validation_only_dry_run" if dry_run else "validation_only_execute",
-        "stages": ["recognition", "detection"],
+        "status": "dry_run_ready" if dry_run else "completed",
+        "steps": steps,
         "artifacts": {
             "processed_csv": processed_csv,
             "image_root": image_root,
             "recognition_run_dir": artifacts["recognition_run_dir"],
             "detection_run_dir": artifacts["detection_run_dir"],
+            "manifest_train_csv": manifest_paths["train"],
+            "manifest_val_csv": manifest_paths["val"],
+            "manifest_test_csv": manifest_paths["test"],
+            "evaluation_report_path": evaluation_report_path,
+            "export_bundle_path": export_bundle_path,
         },
     }

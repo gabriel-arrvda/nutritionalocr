@@ -139,25 +139,25 @@ After collecting data:
 3. Proceed to **Phase 2: OCR Model Training**
 4. Build API backend (Phase 3)
 
-## Fase 2: OCR Training (validation-only flow)
+## Fase 2: OCR Training (full pipeline orchestration)
 
-### CLI validation-only (default dry-run)
+### CLI dry-run (default)
 
 ```bash
 python3 scripts/train_ocr.py --dry-run --processed-csv data/processed/training/merged.csv --image-root data/images
 ```
 
-O comando imprime um relatório JSON da pipeline e finaliza com código de saída `0`.
-No modo `--dry-run`, o status retornado é `validation_only_dry_run`.
+No modo `--dry-run`, a pipeline valida dataset, gera manifests e simula estágios de treino/avaliação/export sem treino pesado.
+Status retornado: `dry_run_ready`.
 
-### CLI validation-only with `--execute`
+### CLI execução com `--execute`
 
 ```bash
 python3 scripts/train_ocr.py --execute --processed-csv data/processed/training/merged.csv --image-root data/images
 ```
 
-`--execute` roda o mesmo fluxo de validação com efeitos de escrita de artefatos de preparação e retorna `validation_only_execute`.
-Esse modo **não** executa treinamento de modelo.
+`--execute` executa o fluxo completo de orquestração de estágios (A reconhecimento, B detecção, avaliação e export) via comandos placeholder.
+Status retornado: `completed`.
 
 ### Notebook de treinamento
 
@@ -165,16 +165,22 @@ Esse modo **não** executa treinamento de modelo.
 jupyter notebook notebooks/02_ocr_training.ipynb
 ```
 
-### Artefatos esperados no fluxo de validação
+### Artefatos esperados no fluxo
 
 ```
 logs/
 └── training/
+    ├── dataset_validation_report.json
+    ├── evaluation_report.json
+    ├── model_export.tar.gz
     ├── recognition/
     └── detection/
 data/
 └── processed/
     └── training/
+        ├── manifest_train.csv
+        ├── manifest_val.csv
+        └── manifest_test.csv
 ```
 
 ## Validação Final (Task 13)
